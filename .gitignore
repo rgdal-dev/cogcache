@@ -8,3 +8,6 @@ src/rust/vendor
 src/Makevars
 src/Makevars.win
 src/rust/target/
+src/*.o
+src/*.so
+src/*.dll
