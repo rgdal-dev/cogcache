@@ -1,0 +1,3 @@
+useDynLib(cogcache, .registration = TRUE)
+export(rust_decode_tile)
+export(rust_fetch_decode_tile)

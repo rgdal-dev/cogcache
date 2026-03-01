@@ -1,0 +1,15 @@
+Package: cogcache
+Title: COG Tile Cache with Rust Decode
+Version: 0.0.1
+Authors@R: person("Michael", "Sumner", email = "mdsumner@gmail.com",
+                  role = c("aut", "cre"))
+Description: Fetch and decode Cloud Optimised GeoTIFF tiles via HTTP range
+    requests, with a Rust backend for decompression and predictor undo.
+    Tiles are catalogued and cached in DuckDB. This is a proof-of-concept
+    for a Rust-native warper architecture.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+SystemRequirements: Cargo (Rust's package manager), rustc
+Config/rextendr/version: 0.4.2
