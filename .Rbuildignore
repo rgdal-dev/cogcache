@@ -5,3 +5,6 @@
 ^src/rust/target$
 ^src/Makevars$
 ^src/Makevars\.win$
+^LICENSE\.md$
+^README\.Rmd$
+^CODE_OF_CONDUCT\.md$

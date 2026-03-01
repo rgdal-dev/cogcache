@@ -1,6 +1,6 @@
 Package: cogcache
 Title: COG Tile Cache with Rust Decode
-Version: 0.0.1
+Version: 0.0.1.9001
 Authors@R: person("Michael", "Sumner", email = "mdsumner@gmail.com",
                   role = c("aut", "cre"))
 Description: Fetch and decode Cloud Optimised GeoTIFF tiles via HTTP range
