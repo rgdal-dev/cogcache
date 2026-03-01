@@ -107,10 +107,10 @@ if (identical(as.numeric(rust_pix_na), as.numeric(gdal_pix))) {
 }
 
 ## --- Benchmark ---------------------------------------------------------------
-cat("\nBenchmark: R decode vs Rust decode (1000 iterations on same tile)\n")
+cat("\nBenchmark: R decode vs Rust decode (100 iterations on same tile)\n")
 cat("R:    ")
-print(system.time(for (i in 1:1000) decode_deflate_tile_r(raw_bytes, actual_w, actual_h)))
+print(system.time(for (i in 1:100) decode_deflate_tile_r(raw_bytes, actual_w, actual_h,predictor = 2L)))
 cat("Rust: ")
-print(system.time(for (i in 1:1000) rust_decode_tile(raw_bytes, actual_w, actual_h)))
+print(system.time(for (i in 1:100) rust_decode_tile(raw_bytes, actual_w, actual_h, predictor = 2L)))
 
 ds$close()
