@@ -10,7 +10,7 @@ fn decode_deflate_pixels(
     tile_width: usize,
     tile_height: usize,
     predictor: i32,
-) -> extendr_api::Result<Robj> {
+) -> std::result::Result<Vec<i32>, String> {
     let n_pixels = tile_width * tile_height;
 
     // Decompress with zlib (TIFF DEFLATE uses zlib-wrapped deflate)
@@ -18,24 +18,23 @@ fn decode_deflate_pixels(
     let mut decompressed = Vec::with_capacity(n_pixels * 2);
     decoder
         .read_to_end(&mut decompressed)
-        .map_err(|e| Error::Other(format!("DEFLATE decompression failed: {}", e)))?;
-       // .expect("DEFLATE decompression failed");
+        .map_err(|e| format!("DEFLATE decompression failed: {}", e))?;
 
-    assert_eq!(
-        decompressed.len(),
-        n_pixels * 2,
-        "Decompressed size {} != expected {} ({}x{}x2)",
-        decompressed.len(),
-        n_pixels * 2,
-        tile_width,
-        tile_height
-    );
+    if decompressed.len() != n_pixels * 2 {
+        return Err(format!(
+            "Decompressed size {} != expected {} ({}x{}x2)",
+            decompressed.len(),
+            n_pixels * 2,
+            tile_width,
+            tile_height
+        ));
+    }
 
     // Read as little-endian UInt16 into i32 (R integer range)
     let mut pixels: Vec<i32> = decompressed
-    .chunks_exact(2)
-    .map(|b| u16::from_le_bytes([b[0], b[1]]) as i32)
-    .collect();
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]) as i32)
+        .collect();
 
     // Undo predictor=2: cumsum each row, mod 65536
     if predictor == 2 {
@@ -48,7 +47,7 @@ fn decode_deflate_pixels(
         }
     }
 
-    Ok(r!(pixels))
+    Ok(pixels)
 }
 
 /// Decode a DEFLATE-compressed tile with predictor=2 undo.
@@ -68,14 +67,15 @@ fn rust_decode_tile(
     tile_width: i32,
     tile_height: i32,
     predictor: i32,
-) -> Robj {
+) -> extendr_api::Result<Robj> {
     let pixels = decode_deflate_pixels(
         raw_bytes.as_slice(),
         tile_width as usize,
         tile_height as usize,
         predictor,
-    );
-    r!(pixels)
+    )
+    .map_err(Error::Other)?;
+    Ok(r!(pixels))
 }
 
 /// Fetch a tile via HTTP range request and decode it.
@@ -99,9 +99,9 @@ fn rust_fetch_decode_tile(
     tile_width: i32,
     tile_height: i32,
     predictor: i32,
-) -> extendr_api::Result<Robj>  {
-    //this works because R doesn't have 64-bit integers and
-    // the offsets fit in f64's 53-bit mantissa
+) -> extendr_api::Result<Robj> {
+    // byte_offset is f64 because R doesn't have 64-bit integers;
+    // the offsets fit in f64's 53-bit mantissa (up to 9 petabytes)
     let offset = byte_offset as u64;
     let length = byte_length as u64;
     let range_end = offset + length - 1;
@@ -112,21 +112,20 @@ fn rust_fetch_decode_tile(
         .set("Range", &range_header)
         .call()
         .map_err(|e| Error::Other(format!("HTTP request failed: {}", e)))?;
-//        .expect("HTTP request failed");
 
     let mut compressed = Vec::with_capacity(byte_length as usize);
     resp.into_reader()
         .read_to_end(&mut compressed)
         .map_err(|e| Error::Other(format!("Failed to read response body: {}", e)))?;
-        //.expect("Failed to read response body");
 
     let pixels = decode_deflate_pixels(
         &compressed,
         tile_width as usize,
         tile_height as usize,
         predictor,
-    );
-   Ok(r!(pixels))
+    )
+    .map_err(Error::Other)?;
+    Ok(r!(pixels))
 }
 
 extendr_module! {
