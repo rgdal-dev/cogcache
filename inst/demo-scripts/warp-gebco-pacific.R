@@ -160,7 +160,7 @@ source_footprint <- function(tile_extent, tile_dim, out_crs, src_crs,
 
 ## --- Output directory ---
 
-out_dir <- "tiles/tiles_fiji_lcc"
+out_dir <- "tiles/tiles_pacific"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 ## --- Phase 1: Build the dest→source tile mapping ---

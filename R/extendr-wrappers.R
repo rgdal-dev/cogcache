@@ -93,6 +93,29 @@ rust_warp_scanline <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pi
 #' @export
 rust_warp_approx <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata, max_error) .Call(wrap__rust_warp_approx, src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata, max_error)
 
+#' Compute the source pixel window needed for a destination window.
+#'
+#' This is the GDAL ComputeSourceWindow equivalent: given a destination
+#' pixel window (offset + size) and CRS/geotransform specs for both source
+#' and destination, determine which source pixels are needed.
+#'
+#' Uses the same algorithm as GDAL: edge sampling with grid fallback,
+#' antimeridian heuristic, resampling padding.
+#'
+#' @param src_crs Character CRS string
+#' @param src_gt Numeric vector length 6 (source geotransform)
+#' @param src_dim Integer vector c(ncol, nrow) — full source raster size
+#' @param dst_crs Character CRS string
+#' @param dst_gt Numeric vector length 6 (dest geotransform)
+#' @param dst_off Integer vector c(col_off, row_off) — dest window offset
+#' @param dst_size Integer vector c(ncol, nrow) — dest window size
+#' @param resample_padding Integer — extra pixels for resampling kernel
+#'   (0 = nearest, 1 = bilinear, 2 = cubic, 3 = lanczos)
+#' @return List with xoff, yoff, xsize, ysize, fill_ratio, n_failed, n_samples
+#'   or NULL if computation fails (too few valid transform points)
+#' @export
+rust_compute_source_window <- function(src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_off, dst_size, resample_padding) .Call(wrap__rust_compute_source_window, src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_off, dst_size, resample_padding)
+
 #' Compute a warp mapping (legacy interface, wraps GenImgProjTransformer).
 #' @param src_crs Character CRS string
 #' @param src_gt Numeric vector length 6
