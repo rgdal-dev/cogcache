@@ -1,296 +1,229 @@
 ---
 title: "Warp Mapping Prototype: Coordinate Transform Proof"
 author: "Michael Sumner"
-date: "2026-03-01"
+date: "2026-03-02"
 format: html
 ---
 
 ## Goal
 
-Prove that we can independently compute the source→destination pixel mapping
-that GDAL's warper uses internally. Given a source grid (UTM, from the COG)
-and a destination grid (e.g. EPSG:3857 web mercator tile), compute which source
-pixel each destination pixel maps to, then sample with nearest neighbour and
-compare against `gdalwarp`.
-
-This is the coordinate transform core — the piece nobody has extracted as a
-standalone module.
+Independently compute the source→destination pixel mapping that GDAL's warper
+uses internally, compare against `gdalwarp`, and settle the orientation/indexing
+details so we can move to chunked Rust warps with confidence.
 
 ## Setup
 
 ```{r}
 #| label: setup
 library(gdalraster)
-library(grout)
 library(reproj)
 library(vaster)
+library(slippymath)
 ```
 
-## Step 1: Define source and destination grids
+## Source and destination grids
 
-A "grid spec" is the minimal description of a regular raster grid:
-CRS + extent + dimensions. Everything else (resolution, geotransform,
-pixel centres vs corners) derives from these three.
+A grid spec is: CRS + extent + dimension. Everything else derives.
 
 ```{r}
 #| label: grid-specs
 
-## Source: our Sentinel-2 COG in UTM zone 55S
 cog_url <- "/vsicurl/https://e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com/sentinel-2-c1-l2a/55/G/CM/2026/2/S2C_T55GCM_20260227T000650_L2A/B04.tif"
 
 ds <- new(GDALRaster, cog_url)
 
-src_grid <- list(
-  crs    = ds$getProjectionRef(),
-  extent = ds$bbox()[c(1, 3, 2, 4)],          # c(xmin, xmax, ymin, ymax)
-  dim    = c(ds$getRasterXSize(), ds$getRasterYSize()),
-  gt     = ds$getGeoTransform()
-)
-
-cat("Source grid:\n")
-cat("  CRS:   ", substr(src_grid$crs, 1, 60), "...\n")
-cat("  Extent:", src_grid$extent, "\n")
-cat("  Dim:   ", src_grid$dim, "\n")
-cat("  Res:   ", src_grid$gt[2], src_grid$gt[6], "\n")
-
+## Source grid: extent as c(xmin, xmax, ymin, ymax)
+src_ext <- ds$bbox()[c(1, 3, 2, 4)]
+src_dim <- c(ds$getRasterXSize(), ds$getRasterYSize())
+src_crs <- ds$getProjectionRef()
+src_gt  <- ds$getGeoTransform()
 ```
-
-Now define a destination grid. For this proof, let's use a web mercator
-tile that overlaps our source. We'll compute the extent from a z/x/y
-tile address.
 
 ```{r}
 #| label: dest-grid
 
-## Helper: compute web mercator tile extent from z/x/y
-## Based on OSM/slippy map tile conventions
+## Slippy tile extent in EPSG:3857
 tile_extent_3857 <- function(z, x, y) {
   n <- 2^z
-  lon_min <- x / n * 360 - 180
-  lon_max <- (x + 1) / n * 360 - 180
-  lat_max <- atan(sinh(pi * (1 - 2 * y / n))) * 180 / pi
-  lat_min <- atan(sinh(pi * (1 - 2 * (y + 1) / n))) * 180 / pi
-
-  print(c(lon_min, lon_max, lat_min, lat_max))
-  reproj::reproj_extent(c(lon_min, lon_max, lat_min, lat_max), "EPSG:3857",
-                         source = "EPSG:4326")
+  lon <- c(x, x + 1) / n * 360 - 180
+  lat <- atan(sinh(pi * (1 - 2 * c(y, y + 1) / n))) * 180 / pi
+  reproj_extent(c(lon, rev(lat)), "EPSG:3857", source = "EPSG:4326")
 }
 
-
-llex <- reproj::reproj_extent(src_grid$extent, "EPSG:4326", source = src_grid$crs)
-
+## Find the z=10 tile at the centre of our source
+llex <- reproj_extent(src_ext, "EPSG:4326", source = src_crs)
 z <- 10L
-tile <- slippymath::lonlat_to_tilenum(mean(llex[1:2]), mean(llex[3:4]), 10)
-tx <- tile$x; ty <- tile$y
-dest_extent <- tile_extent_3857(z, tx, ty)
+tile <- lonlat_to_tilenum(mean(llex[1:2]), mean(llex[3:4]), z)
 
-## Standard web tile is 256x256
+dest_ext <- tile_extent_3857(z, tile$x, tile$y)
 dest_dim <- c(256L, 256L)
-
-dest_grid <- list(
-  crs    = gdalraster::srs_to_wkt("EPSG:3857"),
-  extent = dest_extent,
-  dim    = dest_dim,
-  gt     = vaster::extent_dim_to_gt(dest_extent, dest_dim)
-)
-names(dest_grid$gt) <- NULL
-
-cat("Destination grid (z/x/y =", z, tx, ty, "):\n")
-cat("  Extent:", dest_grid$extent, "\n")
-cat("  Dim:   ", dest_grid$dim, "\n")
-cat("  Res:   ", dest_grid$gt[2], dest_grid$gt[6], "\n")
+dest_crs <- srs_to_wkt("EPSG:3857")
+dest_gt  <- extent_dim_to_gt(dest_ext, dest_dim)
 ```
 
-## Step 2: Build the inverse transform map
+## Inverse transform: dest pixels → source pixels
 
-For each destination pixel, compute its coordinate in destination CRS,
-transform to source CRS, then find the source pixel. This is the inverse
-transform — the heart of the warper.
+For each destination pixel centre, reproject to source CRS
+and convert to source pixel index.
 
 ```{r}
 #| label: inverse-transform
 
-## Generate destination pixel centre coordinates
-## Pixel (col, row) -> geo coordinate via geotransform
-dest_cols <- seq_len(dest_dim[1]) - 0.5  # pixel centres
-dest_rows <- seq_len(dest_dim[2]) - 0.5
+## Destination pixel centres in destination CRS
+## xy_from_cell gives all centres in cell order (row-major)
+dest_xy <- xy_from_cell(dest_dim, dest_ext, seq_len(prod(dest_dim)))
 
-## Full grid of destination pixel centres
-dest_xy <- expand.grid(col = dest_cols, row = dest_rows)
-dest_x <- dest_grid$gt[1] + dest_xy$col * dest_grid$gt[2]
-dest_y <- dest_grid$gt[4] + dest_xy$row * dest_grid$gt[6]
+## Reproject to source CRS
+src_xy <- reproj_xy(dest_xy, target = src_crs, source = "EPSG:3857")
 
-## Transform from dest CRS (EPSG:3857) to source CRS (UTM)
-## reproj_xy takes a matrix and does the batch transform directly
-src_coords <- reproj::reproj_xy(
-  cbind(dest_x, dest_y),
-  target = src_grid$crs,
-  source = "EPSG:3857"
-)
+## Source pixel indices (1-based, vaster convention)
+src_c <- col_from_x(src_dim, src_ext, src_xy[, 1])
+src_r <- row_from_y(src_dim, src_ext, src_xy[, 2])
 
-## Convert source coordinates to source pixel indices
-## Inverse geotransform: pixel = (geo - origin) / resolution
-src_col <- (src_coords[, 1] - src_grid$gt[1]) / src_grid$gt[2]
-src_row <- (src_coords[, 2] - src_grid$gt[4]) / src_grid$gt[6]
+## Valid = inside source grid
+valid <- !is.na(src_c) & !is.na(src_r) &
+         src_c >= 1 & src_c <= src_dim[1] &
+         src_r >= 1 & src_r <= src_dim[2]
 
-## Nearest neighbour: floor to get pixel index (0-based)
-src_col_nn <- floor(src_col)
-src_row_nn <- floor(src_row)
-
-## Build the transform map
-transform_map <- data.frame(
-  dest_col = as.integer(dest_xy$col - 0.5),  # 0-based
-  dest_row = as.integer(dest_xy$row - 0.5),
-  src_col  = as.integer(src_col_nn),
-  src_row  = as.integer(src_row_nn),
-  src_x    = src_coords[, 1],
-  src_y    = src_coords[, 2]
-)
-
-## Flag out-of-bounds pixels
-transform_map$valid <- transform_map$src_col >= 0 &
-                       transform_map$src_col < src_grid$dim[1] &
-                       transform_map$src_row >= 0 &
-                       transform_map$src_row < src_grid$dim[2]
-
-cat("Transform map:\n")
-cat("  Total dest pixels:", nrow(transform_map), "\n")
-cat("  Valid (in source): ", sum(transform_map$valid), "\n")
-cat("  Out of bounds:     ", sum(!transform_map$valid), "\n")
-cat("  Source col range:  ", range(transform_map$src_col[transform_map$valid]), "\n")
-cat("  Source row range:  ", range(transform_map$src_row[transform_map$valid]), "\n")
+cat("Valid:", sum(valid), "/", length(valid), "\n")
 ```
 
-## Step 3: Apply the map (nearest neighbour sampling)
-
-Read the source pixels and apply the transform map.
+## Read source window and sample
 
 ```{r}
 #| label: apply-map
 
-## Which source tiles do we need? The transform map tells us.
-valid_map <- transform_map[transform_map$valid, ]
+## Bounding box of source pixels we need (0-based for gdalraster)
+src_xoff  <- min(src_c[valid]) - 1L
+src_yoff  <- min(src_r[valid]) - 1L
+src_xsize <- max(src_c[valid]) - src_xoff
+src_ysize <- max(src_r[valid]) - src_yoff
 
-## Source pixel range we need to read
-src_xoff  <- min(valid_map$src_col)
-src_yoff  <- min(valid_map$src_row)
-src_xsize <- max(valid_map$src_col) - src_xoff + 1L
-src_ysize <- max(valid_map$src_row) - src_yoff + 1L
-
-cat("Reading source window:", src_xoff, src_yoff, src_xsize, src_ysize, "\n")
-
-## Read the source window
-src_pixels <- ds$read(
-  band = 1,
+src_pixels <- ds$read(band = 1,
   xoff = src_xoff, yoff = src_yoff,
   xsize = src_xsize, ysize = src_ysize,
-  out_xsize = src_xsize, out_ysize = src_ysize
-)
+  out_xsize = src_xsize, out_ysize = src_ysize)
 
-## Build a matrix for easy indexing (row-major)
+## ds$read returns row-major: pixel(0,0), pixel(1,0), ... (x varies fastest)
+## matrix with byrow=TRUE: row i = scanline i, col j = pixel j
 src_mat <- matrix(src_pixels, nrow = src_ysize, ncol = src_xsize, byrow = TRUE)
 
-## Sample: for each valid dest pixel, look up the source pixel
-## Adjust indices relative to the window we read
-output <- rep(NA_real_, nrow(transform_map))
-for (i in which(transform_map$valid)) {
-  sc <- transform_map$src_col[i] - src_xoff + 1L
-  sr <- transform_map$src_row[i] - src_yoff + 1L
-  output[i] <- src_mat[sr, sc]
-}
+## Sample: adjust to window-relative 1-based indices
+output <- rep(NA_real_, nrow(dest_xy))
+sc <- src_c[valid] - src_xoff
+sr <- src_r[valid] - src_yoff
+output[valid] <- src_mat[cbind(sr, sc)]
 
-## Reshape to destination grid
+## xy_from_cell returns row-major order (cell 1..ncol = row 1, etc.)
 output_mat <- matrix(output, nrow = dest_dim[2], ncol = dest_dim[1], byrow = TRUE)
 ```
 
-## Step 4: Compare with GDAL's warp
+## GDAL warp to same grid
 
 ```{r}
 #| label: gdal-warp
 
+tf <- tempfile(tmpdir = "/vsimem", fileext = ".vrt")
+warp(ds, tf, dest_crs,
+     cl_arg = c("-ts", dest_dim,
+                "-te", dest_ext[c(1, 3, 2, 4)],
+                "-r", "near"))
 
-gdalraster::warp(ds, tf <- tempfile(tmpdir = "/vsimem", fileext = ".vrt"), dest_grid$crs, 
-                 cl_arg = c("-ts", dest_grid$dim, "-te", dest_grid$extent[c(1, 3, 2, 4)]))
 warp_ds <- new(GDALRaster, tf)
 gdal_output <- read_ds(warp_ds)
 warp_ds$close()
 
 gdal_mat <- matrix(gdal_output, nrow = dest_dim[2], ncol = dest_dim[1], byrow = TRUE)
-ximage::ximage(gdal_mat, dest_grid$extent)
 ```
 
-## Step 5: Compare the results
+## Compare
 
 ```{r}
 #| label: compare
 
-## Apply nodata
 nodata <- ds$getNoDataValue(band = 1)
 if (!is.na(nodata)) {
   output_mat[output_mat == nodata] <- NA
   gdal_mat[gdal_mat == nodata] <- NA
 }
 
-## Exact match?
-exact_match <- identical(as.numeric(output_mat), as.numeric(gdal_mat))
-cat("Exact match:", exact_match, "\n")
+both_valid <- !is.na(output_mat) & !is.na(gdal_mat)
+diff <- abs(as.numeric(output_mat) - as.numeric(gdal_mat))
 
-## If not exact, how close?
-if (!exact_match) {
-  both_valid <- !is.na(output_mat) & !is.na(gdal_mat)
-  diff <- abs(as.numeric(output_mat) - as.numeric(gdal_mat))
-  cat("Pixels compared:", sum(both_valid), "\n")
-  cat("Identical:      ", sum(diff[both_valid] == 0), "\n")
-  cat("Off by 1:       ", sum(diff[both_valid] == 1), "\n")
-  cat("Max difference: ", max(diff[both_valid]), "\n")
-
-  ## Off-by-one is expected at pixel boundaries due to
-  ## rounding differences (floor vs round) in the coordinate transform
-}
+cat("Pixels compared:", sum(both_valid), "\n")
+cat("Identical:      ", sum(diff[both_valid] == 0), "\n")
+cat("Off by ≤1:      ", sum(diff[both_valid] <= 1), "\n")
+cat("Max difference: ", max(diff[both_valid]), "\n")
 ```
 
-## Step 6: Visual comparison
+## Visual comparison
 
 ```{r}
-#| label: visual-warp
+#| label: visual
 #| fig-width: 10
 #| fig-height: 5
 
 par(mfrow = c(1, 2))
 zlim <- quantile(c(output_mat, gdal_mat), c(0.01, 0.99), na.rm = TRUE)
 
-ximage::ximage(output_mat,
-  main = "Our warp (R transform map + NN)",
-  zlim = zlim, col = hcl.colors(256), axes = FALSE
-)
-ximage::ximage(gdal_mat,
-  main = sprintf("GDAL warp (z=%d, x=%d, y=%d)", z, tx, ty),
-  zlim = zlim, col = hcl.colors(256), axes = FALSE
-)
+ximage::ximage(output_mat, dest_ext,
+  main = "Our warp (reproj + NN)", col = hcl.colors(256))
+ximage::ximage(gdal_mat, dest_ext,
+  main = sprintf("GDAL warp (z=%d, x=%d, y=%d)", z, tile$x, tile$y),
+  col = hcl.colors(256))
 ```
 
-## Step 7: Visualise the transform map itself
+## Orientation checks
+
+These are the details to settle before moving to Rust.
 
 ```{r}
-#| label: vis-transform-map
-#| fig-width: 10
-#| fig-height: 5
+#| label: orientation
 
-## The source column for each dest pixel — shows the warp distortion
-src_col_mat <- matrix(transform_map$src_col, nrow = dest_dim[2],
-                      ncol = dest_dim[1], byrow = TRUE)
-src_row_mat <- matrix(transform_map$src_row, nrow = dest_dim[2],
-                      ncol = dest_dim[1], byrow = TRUE)
+## Check 1: does ds$read return the same order as read_ds for a small window?
+a <- ds$read(band = 1, xoff = 100, yoff = 100,
+             xsize = 4, ysize = 3, out_xsize = 4, out_ysize = 3)
+b <- read_ds(ds, bands = 1, xoff = 100, yoff = 100,
+             xsize = 4, ysize = 3, out_xsize = 4, out_ysize = 3)[[1]]
+cat("ds$read vs read_ds same window:", identical(a, b), "\n")
 
-par(mfrow = c(1, 2))
-ximage::ximage(src_col_mat,
-  main = "Source column index per dest pixel",
-  col = hcl.colors(256, "Viridis"), axes = FALSE
-)
-ximage::ximage(src_row_mat,
-  main = "Source row index per dest pixel",
-  col = hcl.colors(256, "Viridis"), axes = FALSE
-)
+## Check 2: single pixel at known location
+## Top-left of source (pixel 0,0) should be at geo (xmin + res/2, ymax - res/2)
+tl_val <- ds$read(band = 1, xoff = 0, yoff = 0,
+                  xsize = 1, ysize = 1, out_xsize = 1, out_ysize = 1)
+cat("Source pixel (0,0) value:", tl_val, "\n")
+cat("Geo coords:", src_gt[1] + 0.5 * src_gt[2],
+    src_gt[4] + 0.5 * src_gt[6], "\n")
+
+## Check 3: xy_from_cell ordering
+## Cell 1 = top-left, cell ncol = end of first row
+## So the vector is row-major: all of row 1, then row 2, ...
+cat("\nxy_from_cell order:\n")
+cat("  Total:", nrow(dest_xy), "=", dest_dim[1], "x", dest_dim[2], "\n")
+cat("  First 4 (should be first row, x increasing):\n")
+print(head(dest_xy, 4))
+cat("  Cell", dest_dim[1], "(end of row 1):\n")
+print(dest_xy[dest_dim[1], ])
+cat("  Cell", dest_dim[1] + 1, "(start of row 2, same x as cell 1, y decreased):\n")
+print(dest_xy[dest_dim[1] + 1, ])
+
+## Check 4: single dest pixel end-to-end
+## Pick dest pixel at centre of the tile (cell index)
+mid_cell <- (dest_dim[2] %/% 2) * dest_dim[1] + dest_dim[1] %/% 2
+cat("\nDest cell", mid_cell, "(centre of tile):\n")
+cat("  Dest coord:", dest_xy[mid_cell, ], "\n")
+cat("  Src coord: ", src_xy[mid_cell, ], "\n")
+cat("  Src pixel: ", src_c[mid_cell], src_r[mid_cell], "(1-based)\n")
+cat("  Our value: ", output[mid_cell], "\n")
+cat("  Direct read:", ds$read(band = 1,
+    xoff = src_c[mid_cell] - 1L, yoff = src_r[mid_cell] - 1L,
+    xsize = 1, ysize = 1, out_xsize = 1, out_ysize = 1), "\n")
+
+## Check 5: what does GDAL give for that same dest pixel?
+mid_row <- mid_cell %/% dest_dim[1] + 1L
+mid_col <- mid_cell %% dest_dim[1]
+if (mid_col == 0) { mid_col <- dest_dim[1]; mid_row <- mid_row - 1L }
+cat("  GDAL value:", gdal_mat[mid_row, mid_col], "\n")
 ```
 
 ## Cleanup
@@ -303,35 +236,30 @@ ds$close()
 ## What this proves
 
 1. **The transform map is a data structure** — for each destination pixel,
-   we have explicit (src_col, src_row) coordinates. This is what GDAL computes
+   we have explicit source pixel coordinates. This is what GDAL computes
    inside `GDALGenImgProjTransform` but never exposes.
 
-2. **Nearest neighbour is trivial once you have the map** — floor the
-   coordinates. The hard part is the coordinate transform, not the sampling.
+2. **Nearest neighbour is trivial once you have the map** — the hard part
+   is the coordinate transform, not the sampling.
 
-3. **The map is independent of pixel data** — you can compute it once and
-   apply it to any band, any timestep. This is the chunk→fragment mapping
-   that ODC builds implicitly.
+3. **The map is independent of pixel data** — compute it once, apply to
+   any band or timestep. This is the chunk→fragment mapping.
 
-4. **GDAL agreement** — our independent coordinate transform produces the
-   same (or very nearly the same) warped output as `gdalwarp`.
+4. **GDAL agreement** — our independent coordinate transform produces
+   visually identical output. Remaining pixel-level differences are from
+   GDAL's ApproxTransform interpolation vs our exact per-pixel PROJ calls.
 
-## What's next for Rust
+## Next: Rust warp kernel
 
-The Rust function signature for the core warp mapping:
-
-```
+```rust
 pub fn compute_warp_map(
     src_crs: &str,        // WKT or EPSG
     src_gt: [f64; 6],     // geotransform
     src_dim: [usize; 2],  // (width, height)
-    dst_crs: &str,        // WKT or EPSG
-    dst_gt: [f64; 6],     // geotransform
-    dst_dim: [usize; 2],  // (width, height)
-) -> WarpMap {
-    // For each dst pixel, compute src pixel (nearest neighbour)
-    // Uses PROJ for the coordinate transform
-}
+    dst_crs: &str,
+    dst_gt: [f64; 6],
+    dst_dim: [usize; 2],
+) -> WarpMap
 
 pub struct WarpMap {
     pub dst_dim: [usize; 2],
@@ -340,15 +268,5 @@ pub struct WarpMap {
 }
 ```
 
-This is the extracted, standalone module. Apply it to decoded tile pixels
-and you have a warped output. The `proj` crate (or `proj4rs` for WASM)
-provides the coordinate transforms.
-
-## Performance notes
-
-The R version transforms 65,536 points (256×256) through reproj/PROJ as a
-batch matrix operation — already much faster than per-point sf transforms.
-In Rust with the `proj` crate, this would be similar — a batch transform on
-a contiguous buffer. The ApproxTransform trick from GDAL (transform a few
-points, interpolate the rest) would make it even faster for smooth transforms
-like UTM↔Mercator where the mapping is locally affine.
+Grid arithmetic (`extent_dim_to_gt`, `x_from_col`, `col_from_x`) becomes
+equivalent Rust functions — same semantics as vaster, not transliterated GDAL C++.
