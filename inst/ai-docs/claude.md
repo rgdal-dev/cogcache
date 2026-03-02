@@ -3,7 +3,7 @@ title: "Claude restart notes"
 format: html
 ---
 
-- Main design framework and philosophy is in inst/design/docs/gdal-warper-audit.md
+- Original design framework and philosophy is in inst/design/docs/gdal-warper-audit.md
 
 Guiding tasks: 
 

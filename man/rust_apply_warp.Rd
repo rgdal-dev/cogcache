@@ -2,16 +2,16 @@
 % Please edit documentation in R/extendr-wrappers.R
 \name{rust_apply_warp}
 \alias{rust_apply_warp}
-\title{Warp source pixels through a precomputed warp map.}
+\title{Apply a warp map to source pixels (legacy interface).}
 \usage{
 rust_apply_warp(src_pixels, src_ncol, src_nrow, src_cols, src_rows, nodata)
 }
 \arguments{
 \item{src_pixels}{Integer vector of source pixel values (row-major)}
 
-\item{src_ncol}{Integer number of columns in source}
+\item{src_ncol}{Integer source width}
 
-\item{src_nrow}{Integer number of rows in source}
+\item{src_nrow}{Integer source height}
 
 \item{src_cols}{Integer vector of source column indices (1-based, NA for OOB)}
 
@@ -20,8 +20,8 @@ rust_apply_warp(src_pixels, src_ncol, src_nrow, src_cols, src_rows, nodata)
 \item{nodata}{Integer nodata value}
 }
 \value{
-Integer vector of destination pixel values (row-major)
+Integer vector of destination pixel values
 }
 \description{
-Warp source pixels through a precomputed warp map.
+Apply a warp map to source pixels (legacy interface).
 }

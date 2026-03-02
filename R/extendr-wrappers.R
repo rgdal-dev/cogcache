@@ -10,37 +10,85 @@
 #' @useDynLib cogcache, .registration = TRUE
 NULL
 
+#' Decode a DEFLATE-compressed tile with predictor=2 undo.
+#' @param raw_bytes Raw vector of compressed tile bytes
+#' @param tile_width Integer tile width in pixels
+#' @param tile_height Integer tile height in pixels
+#' @param predictor Integer predictor type (1 = none, 2 = horizontal diff)
+#' @return Integer vector of decoded UInt16 pixel values
 #' @export
 rust_decode_tile <- function(raw_bytes, tile_width, tile_height, predictor) .Call(wrap__rust_decode_tile, raw_bytes, tile_width, tile_height, predictor)
 
+#' Fetch a tile via HTTP range request and decode it.
+#' @param url Character URL
+#' @param byte_offset Numeric byte offset
+#' @param byte_length Integer byte count
+#' @param tile_width Integer tile width
+#' @param tile_height Integer tile height
+#' @param predictor Integer predictor type
+#' @return Integer vector of decoded pixel values
 #' @export
 rust_fetch_decode_tile <- function(url, byte_offset, byte_length, tile_width, tile_height, predictor) .Call(wrap__rust_fetch_decode_tile, url, byte_offset, byte_length, tile_width, tile_height, predictor)
 
-#' Compute a warp mapping from destination grid to source grid.
+#' Create a GenImgProjTransformer and transform destination pixel coordinates
+#' to source pixel coordinates.
 #'
-#' Returns a list with components `src_cols` and `src_rows` (integer vectors,
-#' 0-based, -1 for out-of-bounds), in row-major order matching
-#' `xy_from_cell(dst_dim, dst_ext, 1:n)`.
+#' This is the GDAL GenImgProjTransform equivalent: for each destination pixel
+#' centre, compute the corresponding source pixel coordinate via:
+#'   dst pixel → dst geo → src geo → src pixel
 #'
-#' @param src_crs Character CRS string (WKT, EPSG:XXXX, or PROJ string)
-#' @param src_gt Numeric vector of length 6 (GDAL geotransform)
+#' Returns a list with `src_x` and `src_y` (fractional source pixel coords,
+#' 0-based, NaN for failed transforms).
+#'
+#' @param src_crs Character CRS string
+#' @param src_gt Numeric vector length 6 (source geotransform)
+#' @param dst_crs Character CRS string
+#' @param dst_gt Numeric vector length 6 (dest geotransform)
+#' @param dst_dim Integer vector c(ncol, nrow)
+#' @return List with `src_x`, `src_y` numeric vectors (fractional pixel coords)
+#' @export
+rust_gen_img_proj_transform <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim) .Call(wrap__rust_gen_img_proj_transform, src_crs, src_gt, dst_crs, dst_gt, dst_dim)
+
+#' Warp source pixels to destination grid using GenImgProjTransformer.
+#'
+#' This is the full per-scanline warp kernel: for each destination scanline,
+#' transform pixel coordinates to source, then sample source pixels.
+#' Nearest neighbour resampling.
+#'
+#' @param src_crs Character CRS string
+#' @param src_gt Numeric vector length 6
+#' @param dst_crs Character CRS string
+#' @param dst_gt Numeric vector length 6
+#' @param dst_dim Integer vector c(ncol, nrow)
+#' @param src_pixels Integer vector (source pixel buffer, row-major)
+#' @param src_ncol Integer source buffer width
+#' @param src_nrow Integer source buffer height
+#' @param src_col_off Integer source buffer column offset in full image
+#' @param src_row_off Integer source buffer row offset in full image
+#' @param nodata Integer nodata value
+#' @return Integer vector of warped pixels (row-major)
+#' @export
+rust_warp_scanline <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata) .Call(wrap__rust_warp_scanline, src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata)
+
+#' Compute a warp mapping (legacy interface, wraps GenImgProjTransformer).
+#' @param src_crs Character CRS string
+#' @param src_gt Numeric vector length 6
 #' @param src_dim Integer vector c(ncol, nrow)
 #' @param dst_crs Character CRS string
-#' @param dst_gt Numeric vector of length 6 (GDAL geotransform)
+#' @param dst_gt Numeric vector length 6
 #' @param dst_dim Integer vector c(ncol, nrow)
-#' @return List with `src_cols` and `src_rows` integer vectors
+#' @return List with `src_cols`, `src_rows` integer vectors (1-based, NA for OOB)
 #' @export
 rust_warp_map <- function(src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_dim) .Call(wrap__rust_warp_map, src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_dim)
 
-#' Warp source pixels through a precomputed warp map.
-#'
+#' Apply a warp map to source pixels (legacy interface).
 #' @param src_pixels Integer vector of source pixel values (row-major)
-#' @param src_ncol Integer number of columns in source
-#' @param src_nrow Integer number of rows in source
+#' @param src_ncol Integer source width
+#' @param src_nrow Integer source height
 #' @param src_cols Integer vector of source column indices (1-based, NA for OOB)
 #' @param src_rows Integer vector of source row indices (1-based, NA for OOB)
 #' @param nodata Integer nodata value
-#' @return Integer vector of destination pixel values (row-major)
+#' @return Integer vector of destination pixel values
 #' @export
 rust_apply_warp <- function(src_pixels, src_ncol, src_nrow, src_cols, src_rows, nodata) .Call(wrap__rust_apply_warp, src_pixels, src_ncol, src_nrow, src_cols, src_rows, nodata)
 

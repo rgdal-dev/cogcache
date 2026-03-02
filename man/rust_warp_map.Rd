@@ -2,28 +2,26 @@
 % Please edit documentation in R/extendr-wrappers.R
 \name{rust_warp_map}
 \alias{rust_warp_map}
-\title{Compute a warp mapping from destination grid to source grid.}
+\title{Compute a warp mapping (legacy interface, wraps GenImgProjTransformer).}
 \usage{
 rust_warp_map(src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_dim)
 }
 \arguments{
-\item{src_crs}{Character CRS string (WKT, EPSG:XXXX, or PROJ string)}
+\item{src_crs}{Character CRS string}
 
-\item{src_gt}{Numeric vector of length 6 (GDAL geotransform)}
+\item{src_gt}{Numeric vector length 6}
 
 \item{src_dim}{Integer vector c(ncol, nrow)}
 
 \item{dst_crs}{Character CRS string}
 
-\item{dst_gt}{Numeric vector of length 6 (GDAL geotransform)}
+\item{dst_gt}{Numeric vector length 6}
 
 \item{dst_dim}{Integer vector c(ncol, nrow)}
 }
 \value{
-List with \code{src_cols} and \code{src_rows} integer vectors
+List with \code{src_cols}, \code{src_rows} integer vectors (1-based, NA for OOB)
 }
 \description{
-Returns a list with components \code{src_cols} and \code{src_rows} (integer vectors,
-0-based, -1 for out-of-bounds), in row-major order matching
-\code{xy_from_cell(dst_dim, dst_ext, 1:n)}.
+Compute a warp mapping (legacy interface, wraps GenImgProjTransformer).
 }
