@@ -1,0 +1,478 @@
+---
+title: "COG → DuckDB Cache Prototype"
+author: "Michael Sumner"
+date: "2026-03-01"
+format: html
+---
+
+## Goal
+
+Prove that a Cloud Optimised GeoTIFF's internal tile structure can be
+faithfully catalogued in DuckDB, compressed tile bytes fetched via HTTP range
+requests and stored as BLOBs, then independently decoded to produce
+pixel-identical results to GDAL. This is the evidence layer for a Rust-native
+warper architecture that replaces GDAL's opaque block cache with a queryable,
+portable, inspectable tile store.
+
+The deliverable is a `.duckdb` file containing the full tile catalog and raw
+compressed bytes — hand it to someone and say "this *is* that COG."
+
+## Setup
+
+```{r}
+#| label: setup
+library(gdalraster)
+library(grout)
+library(duckdb)
+library(httr2)
+library(blob)
+```
+
+## Pick a COG
+
+We need a DEFLATE-compressed, UInt16, tiled Sentinel-2 COG. Element 84's Earth
+Search hosts these on S3 in two collections:
+
+- `sentinel-2-l2a` (older): bucket `sentinel-cogs`
+- `sentinel-2-c1-l2a` (newer, baseline 5.0+): bucket `e84-earth-search-sentinel-data`
+
+Use `rstac` or the STAC browser to find a clear-sky scene for your area.
+
+```{r}
+#| label: pick-cog
+
+## Edit this URL to your chosen COG
+cog_url <- "/vsicurl/https://e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com/sentinel-2-c1-l2a/55/G/CM/2026/2/S2C_T55GCM_20260227T000650_L2A/B04.tif"
+
+## Open and verify
+ds <- new(GDALRaster, cog_url)
+cat("Dimensions:", ds$getRasterXSize(), "x", ds$getRasterYSize(), "\n")
+cat("Block size:", ds$getBlockSize(band = 1), "\n")
+cat("Structure: ", ds$getMetadata(band = 0, domain = "IMAGE_STRUCTURE"), "\n")
+cat("Data type: ", ds$getDataTypeName(band = 1), "\n")
+cat("Nodata:    ", ds$getNoDataValue(band = 1), "\n")
+```
+
+Confirm COMPRESSION=DEFLATE, PREDICTOR=2, UInt16. If LZW or predictor=3,
+find a different COG.
+
+## Step 1: Build the tile catalog
+
+grout gives us the tile grid geometry from dimension + block size + extent.
+gdalraster gives us the byte offsets via the GTiff driver's `BLOCK_OFFSET`
+metadata items in the `"TIFF"` domain.
+
+```{r}
+#| label: tile-catalog
+
+dim_xy     <- c(ds$getRasterXSize(), ds$getRasterYSize())
+block_size <- ds$getBlockSize(band = 1)
+gt         <- ds$getGeoTransform()
+crs_wkt    <- ds$getProjectionRef()
+bbox       <- ds$bbox()
+
+n_tiles_x <- ceiling(dim_xy[1] / block_size[1])
+n_tiles_y <- ceiling(dim_xy[2] / block_size[2])
+
+## grout tile grid — handles extents, edge tiles, everything
+gtile  <- grout(dim_xy, bbox[c(1, 3, 2, 4)], block_size)
+gindex <- tile_index(gtile)
+
+cat(sprintf("%d x %d = %d tiles\n", n_tiles_x, n_tiles_y, n_tiles_x * n_tiles_y))
+```
+
+## Step 2: Get byte offsets from GDAL
+
+The GTiff driver exposes per-block byte offsets as band-level metadata.
+Each tile has `BLOCK_OFFSET_{x}_{y}` (file position) and
+`BLOCK_SIZE_{x}_{y}` (compressed byte count).
+
+```{r}
+#| label: byte-offsets
+
+get_block_byte_ref <- function(ds, band, tile_col, tile_row) {
+  offset_key <- sprintf("BLOCK_OFFSET_%d_%d", tile_col, tile_row)
+  size_key   <- sprintf("BLOCK_SIZE_%d_%d", tile_col, tile_row)
+
+  offset <- ds$getMetadataItem(band = band, mdi_name = offset_key, domain = "TIFF")
+  bcount <- ds$getMetadataItem(band = band, mdi_name = size_key, domain = "TIFF")
+
+  list(
+    byte_offset = if (nzchar(offset)) as.numeric(offset) else NA_real_,
+    byte_length = if (nzchar(bcount)) as.integer(bcount) else NA_integer_
+  )
+}
+
+## Quick test
+get_block_byte_ref(ds, band = 1, tile_col = 0, tile_row = 0)
+```
+
+Build the full catalog with byte refs and load into DuckDB:
+
+```{r}
+#| label: build-catalog
+
+tile_catalog <- expand.grid(
+  tile_col = seq_len(n_tiles_x) - 1L,
+  tile_row = seq_len(n_tiles_y) - 1L
+)
+
+## Pixel extents
+tile_catalog$pixel_x_off  <- tile_catalog$tile_col * block_size[1]
+tile_catalog$pixel_y_off  <- tile_catalog$tile_row * block_size[2]
+tile_catalog$pixel_x_size <- pmin(block_size[1], dim_xy[1] - tile_catalog$pixel_x_off)
+tile_catalog$pixel_y_size <- pmin(block_size[2], dim_xy[2] - tile_catalog$pixel_y_off)
+
+## Geo extents from geotransform
+tile_catalog$geo_xmin <- gt[1] + tile_catalog$pixel_x_off * gt[2]
+tile_catalog$geo_xmax <- gt[1] + (tile_catalog$pixel_x_off + tile_catalog$pixel_x_size) * gt[2]
+tile_catalog$geo_ymax <- gt[4] + tile_catalog$pixel_y_off * gt[6]
+tile_catalog$geo_ymin <- gt[4] + (tile_catalog$pixel_y_off + tile_catalog$pixel_y_size) * gt[6]
+
+## Byte offsets from GDAL's TIFF metadata domain
+byte_refs <- mapply(
+  function(tc, tr) get_block_byte_ref(ds, band = 1, tc, tr),
+  tile_catalog$tile_col, tile_catalog$tile_row,
+  SIMPLIFY = FALSE
+)
+tile_catalog$byte_offset <- vapply(byte_refs, `[[`, numeric(1), "byte_offset")
+tile_catalog$byte_length <- vapply(byte_refs, `[[`, integer(1), "byte_length")
+
+tile_catalog$source_uri <- cog_url
+tile_catalog$ifd_index  <- 0L
+
+## Into DuckDB
+con <- dbConnect(duckdb())
+dbWriteTable(con, "tile_catalog", tile_catalog)
+
+## Sanity check
+dbGetQuery(con, "
+  SELECT count(*) as n_tiles,
+         count(byte_offset) as n_with_offsets,
+         sum(byte_length) as total_compressed_bytes,
+         min(byte_offset) as first_offset,
+         max(byte_offset + byte_length) as last_byte
+  FROM tile_catalog
+")
+```
+
+## Step 3: Fetch and store compressed tile bytes
+
+HTTP range requests fetch raw compressed bytes directly from S3. We store them
+as BLOBs in DuckDB.
+
+```{r}
+#| label: fetch-bytes
+
+fetch_tile_bytes <- function(url, byte_offset, byte_length) {
+  http_url <- sub("^/vsicurl/", "", url)
+
+  req <- request(http_url) |>
+    req_headers(
+      Range = sprintf("bytes=%d-%d", byte_offset, byte_offset + byte_length - 1)
+    )
+
+  resp <- req_perform(req)
+  resp_body_raw(resp)
+}
+
+## Add blob column
+dbExecute(con, "ALTER TABLE tile_catalog ADD COLUMN raw_bytes BLOB")
+
+## Fetch a random subset — enough to prove the concept
+sample_tiles <- dbGetQuery(con, "
+  SELECT tile_col, tile_row, byte_offset, byte_length
+  FROM tile_catalog
+  WHERE byte_offset IS NOT NULL
+  ORDER BY random()
+  LIMIT 20
+")
+```
+
+```{r}
+#| label: store-blobs
+
+fetched <- lapply(seq_len(nrow(sample_tiles)), function(i) {
+  raw <- fetch_tile_bytes(
+    cog_url,
+    sample_tiles$byte_offset[i],
+    sample_tiles$byte_length[i]
+  )
+  list(
+    tile_col  = sample_tiles$tile_col[i],
+    tile_row  = sample_tiles$tile_row[i],
+    raw_bytes = raw
+  )
+})
+
+## Build blob data.frame — must use as_blob(), not blob()
+raw_list <- lapply(fetched, function(x) x$raw_bytes)
+
+blob_df <- data.frame(
+  tile_col = vapply(fetched, `[[`, integer(1), "tile_col"),
+  tile_row = vapply(fetched, `[[`, integer(1), "tile_row")
+)
+blob_df$raw_bytes <- as_blob(raw_list)
+
+## Bulk write + update
+dbWriteTable(con, "tile_blobs", blob_df, overwrite = TRUE)
+
+dbExecute(con, "
+  UPDATE tile_catalog SET raw_bytes = tile_blobs.raw_bytes
+  FROM tile_blobs
+  WHERE tile_catalog.tile_col = tile_blobs.tile_col
+    AND tile_catalog.tile_row = tile_blobs.tile_row
+    AND tile_catalog.ifd_index = 0
+")
+```
+
+```{r}
+#| label: verify-blobs
+
+## blob_size must equal byte_length for every row
+dbGetQuery(con, "
+  SELECT tile_col, tile_row,
+         octet_length(raw_bytes) as blob_size,
+         byte_length
+  FROM tile_catalog
+  WHERE raw_bytes IS NOT NULL
+  LIMIT 10
+")
+```
+
+## Step 4: Decode and compare with GDAL
+
+`vrt://?block=i,j` (GDAL 3.13) reads a single block via
+`GDALRasterBand::ReadBlock()`. We decode our cached bytes independently and
+compare.
+
+```{r}
+#| label: gdal-block-read
+
+## Read a specific block via vrt://?block= (GDAL 3.13)
+read_block_via_gdal <- function(cog_url, tile_col, tile_row) {
+  block_url <- sprintf("vrt://%s?block=%d,%d", cog_url, tile_col, tile_row)
+  ds_block <- new(GDALRaster, block_url)
+  nx <- ds_block$getRasterXSize()
+  ny <- ds_block$getRasterYSize()
+  pix <- ds_block$read(band = 1, xoff = 0, yoff = 0,
+                       xsize = nx, ysize = ny,
+                       out_xsize = nx, out_ysize = ny)
+  ds_block$close()
+  pix
+}
+```
+
+The decode pipeline: DEFLATE decompress → read as UInt16 → undo predictor=2
+horizontal differencing via cumsum per row.
+
+```{r}
+#| label: decode-cached
+
+## Decode DEFLATE-compressed tile bytes with predictor=2 undo
+##
+## Predictor=2 stores horizontal differences between consecutive samples.
+## Recovery: cumsum each row, mod 2^16 for UInt16 wraparound.
+## memDecompress(..., type = "gzip") handles TIFF's zlib-wrapped DEFLATE.
+decode_deflate_tile <- function(raw_bytes, tile_width, tile_height,
+                                nbytes = 2L, predictor = 2L) {
+  decompressed <- memDecompress(raw_bytes, type = "gzip")
+
+  pix <- readBin(decompressed, what = "integer", n = tile_width * tile_height,
+                 size = nbytes, signed = FALSE, endian = "little")
+
+  if (predictor == 1L) return(pix)
+
+  ## Predictor == 2: sample-level horizontal differencing
+  modulus <- 2L^(nbytes * 8L)
+  mat <- matrix(pix, nrow = tile_height, ncol = tile_width, byrow = TRUE)
+  for (i in seq_len(nrow(mat))) {
+    mat[i, ] <- cumsum(mat[i, ]) %% modulus
+  }
+  as.integer(t(mat))
+}
+```
+
+```{r}
+#| label: compare-tiles
+
+## Metadata for decode
+predictor_str <- ds$getMetadataItem(band = 0, mdi_name = "PREDICTOR",
+                                     domain = "IMAGE_STRUCTURE")
+predictor <- if (nzchar(predictor_str)) as.integer(predictor_str) else 1L
+nodata    <- ds$getNoDataValue(band = 1)
+cat("Predictor:", predictor, " Nodata:", nodata, "\n")
+
+## Compare our decode with GDAL's read for each cached tile
+results <- data.frame(tile_col = integer(), tile_row = integer(),
+                      match = logical())
+
+for (i in seq_len(nrow(sample_tiles))) {
+  tc <- sample_tiles$tile_col[i]
+  tr <- sample_tiles$tile_row[i]
+
+  ## Actual tile dimensions (edge tiles may be smaller than block_size)
+  actual_w <- min(block_size[1], dim_xy[1] - tc * block_size[1])
+  actual_h <- min(block_size[2], dim_xy[2] - tr * block_size[2])
+
+  ## Our decode
+  our_pix <- decode_deflate_tile(
+    fetched[[i]]$raw_bytes,
+    tile_width  = actual_w,
+    tile_height = actual_h,
+    nbytes      = 2L,
+    predictor   = predictor
+  )
+
+  ## Apply nodata → NA to match GDAL's convention
+  if (!is.na(nodata)) {
+    our_pix[our_pix == nodata] <- NA_integer_
+  }
+
+  ## GDAL's read
+  gdal_pix <- read_block_via_gdal(cog_url, tc, tr)
+
+  results <- rbind(results, data.frame(
+    tile_col = tc, tile_row = tr,
+    match = identical(as.numeric(our_pix), as.numeric(gdal_pix))
+  ))
+}
+
+results
+cat(sprintf("\n%d / %d tiles match\n", sum(results$match), nrow(results)))
+```
+
+## Step 5: Visual overview
+
+The tile grid overlaid on the Sentinel-2 image (overview level 3 for speed),
+with match results labelled.
+
+```{r}
+#| label: grout-vis
+#| fig-width: 8
+#| fig-height: 8
+
+r <- terra::rast(sprintf("vrt://%s?ovr=3", cog_url))
+terra::plot(log(r))
+plot(gtile, add = TRUE)
+
+## Join results to grout's tile index (grout is 1-based, results are 0-based)
+gindex2 <- dplyr::left_join(
+  gindex,
+  results |> dplyr::mutate(tile_col = tile_col + 1L, tile_row = tile_row + 1L),
+  c("tile_col", "tile_row")
+) |>
+  dplyr::filter(!is.na(match))
+
+## Label at tile centres
+text(
+  x = (gindex2$xmin + gindex2$xmax) / 2,
+  y = (gindex2$ymin + gindex2$ymax) / 2,
+  labels = gindex2$match,
+  col = ifelse(gindex2$match, "green", "red"),
+  cex = 0.8,
+  font = 2
+)
+```
+
+## Step 6: Side-by-side pixel comparison
+
+```{r}
+#| label: visual-compare
+#| fig-width: 10
+#| fig-height: 5
+
+## Pick a tile with interesting content — avoid edges and nodata-heavy tiles
+## (9,4) or similar from the image centre works well
+tc <- 9L
+tr <- 4L
+
+ref <- get_block_byte_ref(ds, band = 1, tile_col = tc, tile_row = tr)
+raw_viz <- fetch_tile_bytes(cog_url, ref$byte_offset, ref$byte_length)
+
+actual_w <- min(block_size[1], dim_xy[1] - tc * block_size[1])
+actual_h <- min(block_size[2], dim_xy[2] - tr * block_size[2])
+
+gdal_pix <- read_block_via_gdal(cog_url, tc, tr)
+our_pix  <- decode_deflate_tile(raw_viz, actual_w, actual_h,
+                                 nbytes = 2L, predictor = predictor)
+if (!is.na(nodata)) our_pix[our_pix == nodata] <- NA_integer_
+
+par(mfrow = c(1, 2))
+ximage::ximage(matrix(gdal_pix, actual_h, byrow = TRUE),
+      main = sprintf("GDAL vrt://?block=%d,%d", tc, tr),
+      zlim = quantile(gdal_pix, c(0, .99), na.rm = TRUE),
+      col = hcl.colors(256), axes = FALSE)
+ximage::ximage(matrix(our_pix, actual_h, byrow = TRUE),
+      main = sprintf("DuckDB cache decode — (%d,%d)", tc, tr),
+      zlim = quantile(our_pix, c(0, .99), na.rm = TRUE),
+      col = hcl.colors(256), axes = FALSE)
+```
+
+## Step 7: Export the cache
+
+```{r}
+#| label: export-cache
+
+## Export catalog (without blobs) to Parquet
+dbExecute(con, "
+  COPY (
+    SELECT source_uri, ifd_index, tile_col, tile_row,
+           pixel_x_off, pixel_y_off, pixel_x_size, pixel_y_size,
+           geo_xmin, geo_ymax, geo_xmax, geo_ymin,
+           byte_offset, byte_length,
+           octet_length(raw_bytes) as cached_bytes_size
+    FROM tile_catalog
+  ) TO 'tile_catalog.parquet' (FORMAT PARQUET)
+")
+```
+
+## Cleanup
+
+```{r}
+#| label: cleanup
+ds$close()
+dbDisconnect(con, shutdown = TRUE)
+```
+
+## What this proves
+
+1. **COG structure is transparent** — the tile grid is a queryable catalog, not
+   opaque internal state locked inside GDAL's block cache
+2. **Bytes are portable** — compressed tile data moves from S3 → DuckDB →
+   decoded pixels with no GDAL in the decode path
+3. **Cache is inspectable** — SQL queries answer "what's cached?", "how much
+   data?", "which tiles cover this geographic extent?"
+4. **Cache is shareable** — a `.duckdb` or `.parquet` file replaces "you need
+   access to this S3 bucket"
+5. **GDAL agreement** — independent byte-level access produces pixel-identical
+   results to GDAL's internal pipeline
+
+## Key discoveries along the way
+
+- **`BLOCK_OFFSET_{x}_{y}` in the `"TIFF"` metadata domain**: GDAL's GTiff
+  driver exposes per-tile byte offsets as band-level metadata, accessible via
+  `gdalraster::$getMetadataItem()`. Two lines of R give you what would
+  otherwise require parsing TIFF IFDs.
+- **`vrt://?block=i,j`** (GDAL 3.13): Reads a single internal block as a
+  subwindow dataset. Clean oracle for comparison without manual window
+  arithmetic.
+- **`as_blob()` not `blob()`**: The blob package's constructor rejects lists
+  of raw vectors; `as_blob()` accepts them.
+- **`octet_length()` not `length()`**: DuckDB's SQL function for BLOB sizes.
+- **`memDecompress(..., type = "gzip")`**: TIFF DEFLATE uses zlib-wrapped
+  deflate, which R handles as gzip. `type = "unknown"` does not work.
+- **Predictor=2 on UInt16**: Sample-level horizontal differencing, not
+  byte-plane interleaving. Recovery is `cumsum()` per row, mod 65536.
+- **Edge tiles**: Bottom and right edge tiles are smaller than the block size
+  (e.g. 740 instead of 1024 for a 10980-pixel image with 1024-pixel blocks).
+  The decode must use actual tile dimensions.
+
+## Next steps
+
+- [ ] Fetch all 121 tiles (not just 20) and verify 121/121
+- [ ] Catalog overview IFDs via `vrt://{url}?overview_level=N`
+- [ ] Compute which web map tiles (z/x/y in EPSG:3857) need which source tiles
+- [ ] Store a `warp_config` table: source CRS, target CRS, resampling, tile size
+- [ ] Transform tile corners through PROJ to validate source→dest mapping
+- [ ] Compare with what a Rust `async-tiff` reader fetches for the same tiles
