@@ -70,9 +70,18 @@ pub fn warp_nearest(
             let src_col_f = src_x[dst_col];
             let src_row_f = src_y[dst_col];
 
-            // Truncate to integer pixel index (GDAL convention)
-            let src_col_img = src_col_f as i64;
-            let src_row_img = src_row_f as i64;
+            // Nearest neighbour: GDAL uses truncation with a tiny epsilon
+            // to handle floating-point edge cases.
+            //
+            // GDAL (gdalwarpkernel.cpp line 5304):
+            //   int iSrcX = static_cast<int>(_padfX[_iDstX] + 1.0e-10) - nSrcXOff;
+            //   int iSrcY = static_cast<int>(_padfY[_iDstX] + 1.0e-10) - nSrcYOff;
+            //
+            // The epsilon handles the case where a coordinate like 5434.9999999997
+            // (which should be pixel 5435 but floating-point error makes it just
+            // under) gets correctly rounded up.
+            let src_col_img = (src_col_f + 1.0e-10) as i64;
+            let src_row_img = (src_row_f + 1.0e-10) as i64;
 
             // Convert from full-image coords to buffer-relative coords
             let buf_col = src_col_img - src_col_off as i64;

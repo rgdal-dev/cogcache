@@ -48,7 +48,8 @@ rust_warp_approx(
 Integer vector of warped pixels (row-major)
 }
 \description{
-Same as rust_warp_scanline but wraps the GenImgProjTransformer in an
-ApproxTransformer for faster coordinate mapping. The max_error parameter
-controls accuracy/speed tradeoff (GDAL default: 0.125 pixels).
+Matches GDAL's actual default architecture (gdalwarp_lib.cpp line 3260):
+the ApproxTransformer wraps the ENTIRE GenImgProjTransform. The max_error
+parameter is in source pixel units (output of GenImgProjTransform when
+called with bDstToSrc=TRUE). GDAL default: 0.125 pixels.
 }

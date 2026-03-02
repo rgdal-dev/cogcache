@@ -164,17 +164,22 @@ zlim <- quantile(c(exact_pixels, gdal_pixels), c(0.01, 0.99), na.rm = TRUE)
 
 to_mat <- function(v) matrix(v, nrow = dest_dim[2], ncol = dest_dim[1], byrow = TRUE)
 
-ximage::ximage(to_mat(exact_pixels), dest_ext,
-  main = "Exact (per-pixel PROJ)", col = hcl.colors(256), zlim = zlim)
 ximage::ximage(to_mat(approx_pixels_list[["0.125"]]), dest_ext,
   main = "Approx (max_error=0.125)", col = hcl.colors(256), zlim = zlim)
 ximage::ximage(to_mat(gdal_pixels), dest_ext,
   main = "GDAL warp", col = hcl.colors(256), zlim = zlim)
 
-## Difference map: approx vs exact
-diff_map <- approx_pixels_list[["0.125"]] - exact_pixels
-diff_map[abs(diff_map) > 1000] <- NA
-ximage::ximage(to_mat(diff_map), dest_ext,
-  main = "Approx - Exact (0.125)", col = hcl.colors(256))
+## Difference maps against GDAL
+diff_approx_gdal <- approx_pixels_list[["0.125"]] - gdal_pixels
+diff_approx_gdal[abs(diff_approx_gdal) > 1000] <- NA
+diff_exact_gdal <- exact_pixels - gdal_pixels
+diff_exact_gdal[abs(diff_exact_gdal) > 1000] <- NA
+
+dlim <- range(c(diff_approx_gdal, diff_exact_gdal), na.rm = TRUE)
+
+ximage::ximage(to_mat(diff_approx_gdal), dest_ext,
+  main = "Approx - GDAL", col = hcl.colors(256), zlim = dlim)
+ximage::ximage(to_mat(diff_exact_gdal), dest_ext,
+  main = "Exact - GDAL", col = hcl.colors(256), zlim = dlim)
 
 ds$close()

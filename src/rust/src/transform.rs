@@ -1,20 +1,38 @@
 //! Coordinate transformers for the warp pipeline.
 //!
-//! Maps GDAL's transformer hierarchy (gdaltransformer.cpp):
+//! Maps GDAL's transformer hierarchy (gdaltransformer.cpp, commit a3b7b01d3e):
 //!
 //!   Transformer trait          ← GDALTransformerFunc callback signature
-//!   GenImgProjTransformer      ← GDALGenImgProjTransform (~line 2800)
-//!   ApproxTransformer          ← GDALApproxTransform (future Phase 2)
+//!   GenImgProjTransformer      ← GDALGenImgProjTransform
 //!
-//! The GenImgProjTransformer composes three steps:
-//!   1. dst pixel → dst geo     (apply dst geotransform)
-//!   2. dst geo → src geo       (PROJ coordinate transform)
-//!   3. src geo → src pixel     (apply inverse src geotransform)
+//! Default gdalwarp architecture (from gdalwarp_lib.cpp line 3260):
 //!
-//! This is the "back-transform coordinates to source" approach.
-//! For dst_to_src=false, the steps are reversed.
+//!   ApproxTransformer {                    ← GDALApproxTransform (max_error=0.125)
+//!     wraps: GenImgProjTransformer {       ← GDALGenImgProjTransform
+//!       step 1: dst pixel → dst geo         (apply dst geotransform)
+//!       step 2: dst geo → src geo           (PROJ coordinate transform)
+//!       step 3: src geo → src pixel         (apply inv src geotransform)
+//!     }
+//!   }
+//!
+//! The ApproxTransformer wraps the ENTIRE GenImgProjTransform, not just
+//! the reprojection step. The error threshold of 0.125 is in the output
+//! space of GenImgProjTransform = source pixel coordinates (since the
+//! warp kernel always calls with bDstToSrc=TRUE).
+//!
+//! Evidence from gdalwarp_lib.cpp:
+//!   line 2841: pfnTransformer = GDALGenImgProjTransform
+//!   line 3260: hTransformArg = GDALCreateApproxTransformer(
+//!                  GDALGenImgProjTransform, hTransformArg, dfErrorThreshold)
+//!   line 3263: pfnTransformer = GDALApproxTransform
+//!   line 1598: dfErrorThreshold = 0.125 (default)
+//!
+//! Note: There is ALSO a "REPROJECTION_APPROX_ERROR_IN_DST_SRS_UNIT" option
+//! that wraps just the reprojection inside GenImgProjTransformer, but this
+//! is NEVER used by default gdalwarp. It's a separate code path for other
+//! callers.
 
-use crate::grid::{inv_geotransform, x_from_col, y_from_row};
+use crate::grid::inv_geotransform;
 
 // ---------------------------------------------------------------------------
 // Transformer trait
@@ -28,7 +46,7 @@ use crate::grid::{inv_geotransform, x_from_col, y_from_row};
 /// - `dst_to_src=true`: input is dest pixel coords, output is src pixel coords
 /// - `dst_to_src=false`: input is src pixel coords, output is dest pixel coords
 ///
-/// Coordinates are in pixel/line space (0-based, +0.5 = cell centre).
+/// For warp, the kernel always calls with dst_to_src=true.
 pub trait Transformer {
     fn transform(
         &self,
@@ -42,41 +60,32 @@ pub trait Transformer {
 // GenImgProjTransformer
 // ---------------------------------------------------------------------------
 
-/// The workhorse transformer: pixel ↔ georef ↔ CRS pipeline.
+/// The three-step pixel ↔ geo ↔ CRS pipeline.
 ///
-/// Equivalent to GDAL's GDALGenImgProjTransform (gdaltransformer.cpp).
+/// Maps GDAL's GDALGenImgProjTransform (gdaltransformer.cpp line ~3100).
 ///
-/// Holds precomputed geotransforms and their inverses for both source
-/// and destination grids, plus a PROJ transformer for the CRS step.
+/// Composes:
+///   1. Apply geotransform: pixel → geo (always exact)
+///   2. PROJ: CRS → CRS (always exact, per-point)
+///   3. Apply inverse geotransform: geo → pixel (always exact)
+///
+/// The ApproxTransformer wraps this entire struct from outside (in lib.rs),
+/// matching gdalwarp's default architecture.
 pub struct GenImgProjTransformer {
-    // Source grid affine transforms
+    // Source grid
     src_gt: [f64; 6],
     src_inv_gt: [f64; 6],
 
-    // Destination grid affine transforms
+    // Destination grid
     dst_gt: [f64; 6],
     dst_inv_gt: [f64; 6],
 
-    // PROJ: dst CRS → src CRS (for the dst_to_src direction)
+    // PROJ coordinate transforms
     proj_dst_to_src: proj::Proj,
-
-    // PROJ: src CRS → dst CRS (for the src_to_dst direction)
     proj_src_to_dst: proj::Proj,
 }
 
 impl GenImgProjTransformer {
-    /// Create a new GenImgProjTransformer.
-    ///
-    /// # Arguments
-    /// * `src_crs` - Source CRS (WKT, EPSG:XXXX, or PROJ string)
-    /// * `src_gt` - Source geotransform (GDAL convention, 6 elements)
-    /// * `dst_crs` - Destination CRS
-    /// * `dst_gt` - Destination geotransform
-    ///
-    /// # GDAL equivalent
-    /// GDALCreateGenImgProjTransformer2() with source and dest datasets.
-    /// We skip the dataset handles and take the CRS + geotransform directly,
-    /// which is what GDAL extracts from the datasets anyway.
     pub fn new(
         src_crs: &str,
         src_gt: [f64; 6],
@@ -84,12 +93,10 @@ impl GenImgProjTransformer {
         dst_gt: [f64; 6],
     ) -> Result<Self, String> {
         let src_inv_gt = inv_geotransform(&src_gt)
-            .ok_or_else(|| "Source geotransform is not invertible".to_string())?;
+            .ok_or_else(|| "Source geotransform not invertible".to_string())?;
         let dst_inv_gt = inv_geotransform(&dst_gt)
-            .ok_or_else(|| "Destination geotransform is not invertible".to_string())?;
+            .ok_or_else(|| "Dest geotransform not invertible".to_string())?;
 
-        // PROJ transformers — one for each direction
-        // new_known_crs normalises axis order to (easting, northing) / (lon, lat)
         let proj_dst_to_src = proj::Proj::new_known_crs(dst_crs, src_crs, None)
             .map_err(|e| format!("PROJ dst→src failed: {}", e))?;
         let proj_src_to_dst = proj::Proj::new_known_crs(src_crs, dst_crs, None)
@@ -104,33 +111,15 @@ impl GenImgProjTransformer {
             proj_src_to_dst,
         })
     }
-
-    /// Create from GridSpec pairs (convenience).
-    pub fn from_grids(
-        src: &crate::grid::GridSpec,
-        dst: &crate::grid::GridSpec,
-    ) -> Result<Self, String> {
-        Self::new(&src.crs, src.geotransform(), &dst.crs, dst.geotransform())
-    }
 }
 
 impl Transformer for GenImgProjTransformer {
-    /// Transform an array of coordinates.
+    /// Transform coordinates through the three-step pipeline.
     ///
-    /// When `dst_to_src = true`:
-    ///   input:  x[i], y[i] = destination pixel coords (col + 0.5, row + 0.5)
-    ///   output: x[i], y[i] = source pixel coords (fractional)
-    ///
-    /// When `dst_to_src = false`:
-    ///   input:  x[i], y[i] = source pixel coords
-    ///   output: x[i], y[i] = destination pixel coords
-    ///
-    /// The three steps for dst_to_src:
+    /// When `dst_to_src = true` (the warp kernel path):
     ///   1. Apply dst geotransform: pixel → geo
     ///   2. PROJ: dst CRS → src CRS
     ///   3. Apply inverse src geotransform: geo → pixel
-    ///
-    /// This matches GDAL's GDALGenImgProjTransform() exactly.
     fn transform(
         &self,
         dst_to_src: bool,
@@ -138,19 +127,9 @@ impl Transformer for GenImgProjTransformer {
         y: &mut [f64],
     ) -> Vec<bool> {
         let n = x.len();
-        assert_eq!(n, y.len());
-        let mut success = vec![true; n];
 
         if dst_to_src {
-            // Step 1: dst pixel → dst geo (apply dst geotransform)
-            //
-            // GDAL (gdaltransformer.cpp ~line 2830):
-            //   dfGeoX = gt[0] + dfPixel * gt[1] + dfLine * gt[2]
-            //   dfGeoY = gt[3] + dfPixel * gt[4] + dfLine * gt[5]
-            //
-            // For non-rotated grids (gt[2]=0, gt[4]=0), this simplifies to
-            // our x_from_col / y_from_row — but those add +0.5 for cell centre.
-            // Here x[i] already IS pixel + 0.5, so we use the raw geotransform.
+            // Step 1: dst pixel → dst geo (line 3113-3142)
             for i in 0..n {
                 let pixel = x[i];
                 let line = y[i];
@@ -158,12 +137,13 @@ impl Transformer for GenImgProjTransformer {
                 y[i] = self.dst_gt[3] + pixel * self.dst_gt[4] + line * self.dst_gt[5];
             }
 
-            // Step 2: dst geo → src geo (PROJ)
+            // Step 2: PROJ dst geo → src geo (line 3148-3152)
+            let mut success = vec![true; n];
             for i in 0..n {
                 match self.proj_dst_to_src.convert((x[i], y[i])) {
-                    Ok((sx, sy)) => {
-                        x[i] = sx;
-                        y[i] = sy;
+                    Ok((rx, ry)) => {
+                        x[i] = rx;
+                        y[i] = ry;
                     }
                     Err(_) => {
                         success[i] = false;
@@ -171,11 +151,7 @@ impl Transformer for GenImgProjTransformer {
                 }
             }
 
-            // Step 3: src geo → src pixel (apply inverse src geotransform)
-            //
-            // GDAL (gdaltransformer.cpp ~line 2870):
-            //   dfPixel = inv_gt[0] + dfGeoX * inv_gt[1] + dfGeoY * inv_gt[2]
-            //   dfLine  = inv_gt[3] + dfGeoX * inv_gt[4] + dfGeoY * inv_gt[5]
+            // Step 3: src geo → src pixel (line 3158-3187)
             for i in 0..n {
                 if !success[i] {
                     continue;
@@ -189,10 +165,11 @@ impl Transformer for GenImgProjTransformer {
                     + geo_x * self.src_inv_gt[4]
                     + geo_y * self.src_inv_gt[5];
             }
-        } else {
-            // src_to_dst: reverse the three steps
 
-            // Step 1: src pixel → src geo
+            success
+        } else {
+            // Reverse: src pixel → src geo → dst geo → dst pixel
+
             for i in 0..n {
                 let pixel = x[i];
                 let line = y[i];
@@ -200,12 +177,12 @@ impl Transformer for GenImgProjTransformer {
                 y[i] = self.src_gt[3] + pixel * self.src_gt[4] + line * self.src_gt[5];
             }
 
-            // Step 2: src geo → dst geo (PROJ)
+            let mut success = vec![true; n];
             for i in 0..n {
                 match self.proj_src_to_dst.convert((x[i], y[i])) {
-                    Ok((dx, dy)) => {
-                        x[i] = dx;
-                        y[i] = dy;
+                    Ok((rx, ry)) => {
+                        x[i] = rx;
+                        y[i] = ry;
                     }
                     Err(_) => {
                         success[i] = false;
@@ -213,7 +190,6 @@ impl Transformer for GenImgProjTransformer {
                 }
             }
 
-            // Step 3: dst geo → dst pixel
             for i in 0..n {
                 if !success[i] {
                     continue;
@@ -227,32 +203,30 @@ impl Transformer for GenImgProjTransformer {
                     + geo_x * self.dst_inv_gt[4]
                     + geo_y * self.dst_inv_gt[5];
             }
-        }
 
-        success
+            success
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Convenience: transform a whole scanline
+// Convenience: transform scanlines
 // ---------------------------------------------------------------------------
 
 /// Build destination pixel coordinates for a scanline and transform to source.
 ///
-/// This is what GDAL does at the top of GWKNearestThread / GWKGeneralCaseThread:
+/// Matches GDAL's pattern at the top of GWKNearestThread (line 5560):
 ///   for (iDstX = 0; iDstX < nDstXSize; iDstX++) {
 ///       padfX[iDstX] = iDstX + 0.5 + nDstXOff;
 ///       padfY[iDstX] = iDstY + 0.5 + nDstYOff;
 ///   }
 ///   pfnTransformer(..., TRUE, nDstXSize, padfX, padfY, padfZ, pabSuccess);
-///
-/// Returns (src_x, src_y, success) arrays.
 pub fn transform_scanline(
     transformer: &impl Transformer,
-    dst_y: usize,        // destination row (0-based)
-    dst_ncol: usize,     // destination width
-    dst_x_off: usize,    // destination column offset (usually 0)
-    dst_y_off: usize,    // destination row offset (usually 0)
+    dst_y: usize,
+    dst_ncol: usize,
+    dst_x_off: usize,
+    dst_y_off: usize,
 ) -> (Vec<f64>, Vec<f64>, Vec<bool>) {
     let mut x: Vec<f64> = (0..dst_ncol)
         .map(|col| (col + dst_x_off) as f64 + 0.5)
@@ -264,17 +238,7 @@ pub fn transform_scanline(
     (x, y, success)
 }
 
-// ---------------------------------------------------------------------------
-// Convenience: full grid transform (replaces old compute_warp_map)
-// ---------------------------------------------------------------------------
-
 /// Compute source pixel coordinates for every destination pixel.
-///
-/// Returns parallel vectors of (src_col, src_row) as fractional f64.
-/// Failed transforms are NaN.
-///
-/// This is equivalent to calling transform_scanline for every row
-/// and collecting the results.
 pub fn transform_grid(
     transformer: &impl Transformer,
     dst_dim: &[usize; 2],

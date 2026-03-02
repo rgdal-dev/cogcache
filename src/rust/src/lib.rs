@@ -254,9 +254,10 @@ fn rust_warp_scanline(
 
 /// Warp source pixels using ApproxTransformer (GDAL-style adaptive interpolation).
 ///
-/// Same as rust_warp_scanline but wraps the GenImgProjTransformer in an
-/// ApproxTransformer for faster coordinate mapping. The max_error parameter
-/// controls accuracy/speed tradeoff (GDAL default: 0.125 pixels).
+/// Matches GDAL's actual default architecture (gdalwarp_lib.cpp line 3260):
+/// the ApproxTransformer wraps the ENTIRE GenImgProjTransform. The max_error
+/// parameter is in source pixel units (output of GenImgProjTransform when
+/// called with bDstToSrc=TRUE). GDAL default: 0.125 pixels.
 ///
 /// @param src_crs Character CRS string
 /// @param src_gt Numeric vector length 6
@@ -299,6 +300,10 @@ fn rust_warp_approx(
     let dst_gt_arr: [f64; 6] = dst_gt.try_into()
         .map_err(|_| Error::Other("dst_gt conversion failed".to_string()))?;
 
+    // gdalwarp default architecture (gdalwarp_lib.cpp line 3260):
+    // ApproxTransformer wraps the ENTIRE GenImgProjTransform.
+    // max_error is in source pixel units (output space of GenImgProjTransform
+    // when called with bDstToSrc=TRUE). Default: 0.125 pixels.
     let exact = transform::GenImgProjTransformer::new(
         src_crs, src_gt_arr, dst_crs, dst_gt_arr,
     )
