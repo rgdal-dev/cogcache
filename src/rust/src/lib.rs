@@ -14,6 +14,7 @@ use std::io::Read;
 
 pub mod grid;
 pub mod transform;
+pub mod approx;
 pub mod warp;
 
 // ===========================================================================
@@ -251,6 +252,75 @@ fn rust_warp_scanline(
     Ok(r!(output))
 }
 
+/// Warp source pixels using ApproxTransformer (GDAL-style adaptive interpolation).
+///
+/// Same as rust_warp_scanline but wraps the GenImgProjTransformer in an
+/// ApproxTransformer for faster coordinate mapping. The max_error parameter
+/// controls accuracy/speed tradeoff (GDAL default: 0.125 pixels).
+///
+/// @param src_crs Character CRS string
+/// @param src_gt Numeric vector length 6
+/// @param dst_crs Character CRS string
+/// @param dst_gt Numeric vector length 6
+/// @param dst_dim Integer vector c(ncol, nrow)
+/// @param src_pixels Integer vector (source pixel buffer, row-major)
+/// @param src_ncol Integer source buffer width
+/// @param src_nrow Integer source buffer height
+/// @param src_col_off Integer source buffer column offset in full image
+/// @param src_row_off Integer source buffer row offset in full image
+/// @param nodata Integer nodata value
+/// @param max_error Numeric max interpolation error in pixels (default 0.125)
+/// @return Integer vector of warped pixels (row-major)
+/// @export
+#[extendr]
+fn rust_warp_approx(
+    src_crs: &str,
+    src_gt: &[f64],
+    dst_crs: &str,
+    dst_gt: &[f64],
+    dst_dim: &[i32],
+    src_pixels: &[i32],
+    src_ncol: i32,
+    src_nrow: i32,
+    src_col_off: i32,
+    src_row_off: i32,
+    nodata: i32,
+    max_error: f64,
+) -> extendr_api::Result<Robj> {
+    if src_gt.len() != 6 || dst_gt.len() != 6 {
+        return Err(Error::Other("geotransform must be length 6".to_string()));
+    }
+    if dst_dim.len() != 2 {
+        return Err(Error::Other("dim must be length 2 (ncol, nrow)".to_string()));
+    }
+
+    let src_gt_arr: [f64; 6] = src_gt.try_into()
+        .map_err(|_| Error::Other("src_gt conversion failed".to_string()))?;
+    let dst_gt_arr: [f64; 6] = dst_gt.try_into()
+        .map_err(|_| Error::Other("dst_gt conversion failed".to_string()))?;
+
+    let exact = transform::GenImgProjTransformer::new(
+        src_crs, src_gt_arr, dst_crs, dst_gt_arr,
+    )
+    .map_err(Error::Other)?;
+
+    let transformer = approx::ApproxTransformer::new(exact, max_error);
+
+    let output = warp::warp_nearest(
+        &transformer,
+        src_pixels,
+        src_ncol as usize,
+        src_nrow as usize,
+        src_col_off as usize,
+        src_row_off as usize,
+        dst_dim[0] as usize,
+        dst_dim[1] as usize,
+        nodata,
+    );
+
+    Ok(r!(output))
+}
+
 // ===========================================================================
 // Legacy wrappers (kept for backward compatibility with test scripts)
 // ===========================================================================
@@ -377,6 +447,7 @@ extendr_module! {
     fn rust_fetch_decode_tile;
     fn rust_gen_img_proj_transform;
     fn rust_warp_scanline;
+    fn rust_warp_approx;
     fn rust_warp_map;
     fn rust_apply_warp;
 }

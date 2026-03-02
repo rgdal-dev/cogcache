@@ -70,6 +70,28 @@ rust_gen_img_proj_transform <- function(src_crs, src_gt, dst_crs, dst_gt, dst_di
 #' @export
 rust_warp_scanline <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata) .Call(wrap__rust_warp_scanline, src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata)
 
+#' Warp source pixels using ApproxTransformer (GDAL-style adaptive interpolation).
+#'
+#' Same as rust_warp_scanline but wraps the GenImgProjTransformer in an
+#' ApproxTransformer for faster coordinate mapping. The max_error parameter
+#' controls accuracy/speed tradeoff (GDAL default: 0.125 pixels).
+#'
+#' @param src_crs Character CRS string
+#' @param src_gt Numeric vector length 6
+#' @param dst_crs Character CRS string
+#' @param dst_gt Numeric vector length 6
+#' @param dst_dim Integer vector c(ncol, nrow)
+#' @param src_pixels Integer vector (source pixel buffer, row-major)
+#' @param src_ncol Integer source buffer width
+#' @param src_nrow Integer source buffer height
+#' @param src_col_off Integer source buffer column offset in full image
+#' @param src_row_off Integer source buffer row offset in full image
+#' @param nodata Integer nodata value
+#' @param max_error Numeric max interpolation error in pixels (default 0.125)
+#' @return Integer vector of warped pixels (row-major)
+#' @export
+rust_warp_approx <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata, max_error) .Call(wrap__rust_warp_approx, src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata, max_error)
+
 #' Compute a warp mapping (legacy interface, wraps GenImgProjTransformer).
 #' @param src_crs Character CRS string
 #' @param src_gt Numeric vector length 6
