@@ -12,7 +12,6 @@ use extendr_api::prelude::*;
 use flate2::read::ZlibDecoder;
 use std::io::Read;
 
-pub mod grid;
 pub mod transform;
 pub mod approx;
 pub mod warp;
@@ -373,7 +372,7 @@ fn rust_warp_map(
 
     // Convert fractional pixel coords to 1-based integer indices for R
     // NaN → NA, round for nearest neighbour, bounds check
-    let src_cols_r: Vec<Option<i32>> = src_x.iter().enumerate().map(|(i, &sx)| {
+    let src_cols_r: Vec<Option<i32>> = src_x.iter().enumerate().map(|(_, &sx)| {
         if sx.is_nan() { return None; }
         let col = sx as i32; // truncate (GDAL convention)
         if col >= 0 && col < src_dim_arr[0] as i32 {
@@ -383,7 +382,7 @@ fn rust_warp_map(
         }
     }).collect();
 
-    let src_rows_r: Vec<Option<i32>> = src_y.iter().enumerate().map(|(i, &sy)| {
+    let src_rows_r: Vec<Option<i32>> = src_y.iter().enumerate().map(|(_, &sy)| {
         if sy.is_nan() { return None; }
         let row = sy as i32;
         if row >= 0 && row < src_dim_arr[1] as i32 {
@@ -455,4 +454,20 @@ extendr_module! {
     fn rust_warp_approx;
     fn rust_warp_map;
     fn rust_apply_warp;
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_antarctic_crs() {
+        let proj = proj::Proj::new_known_crs("EPSG:3857", "EPSG:3031", None).unwrap();
+        let result = proj.convert((7006000.0, -10340500.0)).unwrap();
+        println!("3031: {:?}", result);
+
+        let proj2 = proj::Proj::new_known_crs("EPSG:3857", "EPSG:3412", None).unwrap();
+        let result2 = proj2.convert((7006000.0, -10340500.0)).unwrap();
+        println!("3412: {:?}", result2);
+    }
 }

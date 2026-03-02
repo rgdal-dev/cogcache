@@ -32,7 +32,7 @@
 //! is NEVER used by default gdalwarp. It's a separate code path for other
 //! callers.
 
-use crate::grid::inv_geotransform;
+use vaster::inv_geotransform;
 
 // ---------------------------------------------------------------------------
 // Transformer trait

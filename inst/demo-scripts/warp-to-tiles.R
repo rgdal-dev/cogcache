@@ -18,8 +18,8 @@ library(sf)
 cog_url <- "/vsicurl/https://e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com/sentinel-2-c1-l2a/55/G/CM/2026/2/S2C_T55GCM_20260227T000650_L2A/B04.tif"
 zoom <- 10L
 tile_size <- 256L
-out_dir <- "tiles"
-dir.create(out_dir, showWarnings = FALSE)
+out_dir <- "tiles/tiles_tasmania"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 ## ---- Step 1: Source footprint ----
 cat("=== Step 1: Compute source footprint ===\n")
