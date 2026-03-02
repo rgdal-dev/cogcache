@@ -10,33 +10,39 @@
 #' @useDynLib cogcache, .registration = TRUE
 NULL
 
-#' Decode a DEFLATE-compressed tile with predictor=2 undo.
-#'
-#' Takes raw compressed bytes (as R raw vector), tile dimensions, and
-#' predictor type. Returns decoded pixel values as integer vector.
-#'
-#' @param raw_bytes Raw vector of compressed tile bytes
-#' @param tile_width Integer tile width in pixels
-#' @param tile_height Integer tile height in pixels
-#' @param predictor Integer predictor type (1 = none, 2 = horizontal diff)
-#' @return Integer vector of decoded UInt16 pixel values
 #' @export
 rust_decode_tile <- function(raw_bytes, tile_width, tile_height, predictor) .Call(wrap__rust_decode_tile, raw_bytes, tile_width, tile_height, predictor)
 
-#' Fetch a tile via HTTP range request and decode it.
-#'
-#' Performs the full pipeline in Rust: HTTP range fetch, DEFLATE decompress,
-#' predictor undo. Returns decoded pixel values as integer vector.
-#'
-#' @param url Character string URL (without /vsicurl/ prefix)
-#' @param byte_offset Numeric byte offset in the file
-#' @param byte_length Integer number of bytes to fetch
-#' @param tile_width Integer tile width in pixels
-#' @param tile_height Integer tile height in pixels
-#' @param predictor Integer predictor type (1 = none, 2 = horizontal diff)
-#' @return Integer vector of decoded UInt16 pixel values
 #' @export
 rust_fetch_decode_tile <- function(url, byte_offset, byte_length, tile_width, tile_height, predictor) .Call(wrap__rust_fetch_decode_tile, url, byte_offset, byte_length, tile_width, tile_height, predictor)
+
+#' Compute a warp mapping from destination grid to source grid.
+#'
+#' Returns a list with components `src_cols` and `src_rows` (integer vectors,
+#' 0-based, -1 for out-of-bounds), in row-major order matching
+#' `xy_from_cell(dst_dim, dst_ext, 1:n)`.
+#'
+#' @param src_crs Character CRS string (WKT, EPSG:XXXX, or PROJ string)
+#' @param src_gt Numeric vector of length 6 (GDAL geotransform)
+#' @param src_dim Integer vector c(ncol, nrow)
+#' @param dst_crs Character CRS string
+#' @param dst_gt Numeric vector of length 6 (GDAL geotransform)
+#' @param dst_dim Integer vector c(ncol, nrow)
+#' @return List with `src_cols` and `src_rows` integer vectors
+#' @export
+rust_warp_map <- function(src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_dim) .Call(wrap__rust_warp_map, src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_dim)
+
+#' Warp source pixels through a precomputed warp map.
+#'
+#' @param src_pixels Integer vector of source pixel values (row-major)
+#' @param src_ncol Integer number of columns in source
+#' @param src_nrow Integer number of rows in source
+#' @param src_cols Integer vector of source column indices (1-based, NA for OOB)
+#' @param src_rows Integer vector of source row indices (1-based, NA for OOB)
+#' @param nodata Integer nodata value
+#' @return Integer vector of destination pixel values (row-major)
+#' @export
+rust_apply_warp <- function(src_pixels, src_ncol, src_nrow, src_cols, src_rows, nodata) .Call(wrap__rust_apply_warp, src_pixels, src_ncol, src_nrow, src_cols, src_rows, nodata)
 
 
 # nolint end
