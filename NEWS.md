@@ -1,3 +1,88 @@
+# cogcache 0.0.1.9011
+
+## Chunk list subdivision (antimeridian efficiency)
+
+New Rust function `collect_chunk_list` implements GDAL's
+`CollectChunkListInternal` recursive destination subdivision, with a key
+improvement: **discontinuity-aware splitting**.
+
+### The problem
+
+GDAL's `ComputeSourceWindow` antimeridian heuristic correctly snaps to full
+source width when the backward probe spans >90% of the source raster. This
+prevents missed pixels but reads the entire latitude band (97.9M pixels for a
+256x256 GEBCO tile over Fiji). GDAL mitigates this through its memory budget
+(`dfWarpMemoryLimit`) which forces subdivision of large source reads. Our Rust
+implementation had no memory budget path, so the fill-ratio was the only
+subdivision trigger — and it was masked by the snap (full-width read looks like
+100% fill).
+
+### The fix (Rust)
+
+Three changes to `source_window.rs`:
+
+1. **Forced low fill ratio on antimeridian snap.** When the >90% width heuristic
+   fires, force `fill_ratio = 0.01` instead of computing from post-snap
+   dimensions. This correctly signals that the read is wasteful.
+
+2. **Discontinuity range detection** (`find_discontinuity_range`). Before blind
+   binary subdivision, scan multiple rows through the destination chunk,
+   transform each to source coordinates, and find the largest source-X gap. If
+   it exceeds 50% of source width, return the column range where the
+   discontinuity occurs across all sampled rows. This is a per-pixel scanline
+   probe — cheap (256 transforms for a 256-wide tile) and precise.
+
+3. **Three-way split.** When a discontinuity range is found, split the
+   destination into: left chunk (entirely east side, compact read), narrow middle
+   strip (straddles the discontinuity, accepts full-width read), right chunk
+   (entirely west side, compact read). The middle strip is emitted without
+   further recursion.
+
+New exported R function: `rust_collect_chunk_list`.
+
+### The fix (R)
+
+New R function `plan_warp_reads` (in `R/plan.R`) wraps `rust_collect_chunk_list`
+and post-processes the middle strip:
+
+- `detect_split_strips` transforms the strip's destination pixels to source
+  coordinates, finds the bimodal gap, and returns two compact source read
+  windows (one per side of the antimeridian).
+- The warp pipeline executes split-read chunks by warping each strip
+  independently and merging non-nodata values.
+
+### Results (Fiji LCC tile [5,3], GEBCO)
+
+```
+Chunk 1: dst=(0,0,80,256)   src=(86021,24871,379,1134)  lon=[178.4,180.0]
+Chunk 2: dst=(80,0,5,256)   split=TRUE
+  read[1]: src=(0,24877,19,1120)      lon=[-180.0,-179.9]
+  read[2]: src=(86384,24877,16,1120)  lon=[179.9,180.0]
+Chunk 3: dst=(85,0,171,256) src=(0,24856,808,1147)      lon=[-180.0,-176.6]
+
+Total: 1,395,762 pixels (1.4% of full-width 99,273,600)
+```
+
+70x reduction in source I/O. Adjacent non-straddling tiles are unaffected
+(single compact chunk, fill_ratio ~1.0).
+
+### GDAL source cross-references
+
+| Our code | GDAL equivalent | gdalwarpoperation.cpp |
+|---|---|---|
+| `collect_chunk_list` | `CollectChunkListInternal` | lines 1456-1624 |
+| `find_discontinuity_range` | (no equivalent — GDAL uses memory budget) | — |
+| `build_source_grid` | `ComputeSourceWindowStartingFromSource` setup | lines 2656-2703 |
+| `refine_from_source` | `ComputeSourceWindowStartingFromSource` per-call | lines 2720-2747 |
+| forced fill_ratio | `dfWarpMemoryLimit` check | lines 1528-1531 |
+
+### New files
+
+- `src/rust/src/source_window.rs`: `collect_chunk_list`, `find_discontinuity_range`,
+  `build_source_grid`, `refine_from_source`, `ChunkPlan`, `SourceGrid`
+- `R/plan.R`: `plan_warp_reads`, `detect_split_strips`
+- `inst/test-scripts/test_chunk_list.R`, `inst/test-scripts/test_plan.R`
+
 # cogcache 0.0.1.9010
 
 ## Overview selection

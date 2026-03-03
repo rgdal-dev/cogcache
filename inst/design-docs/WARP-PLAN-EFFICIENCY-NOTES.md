@@ -48,6 +48,30 @@ These techniques layer naturally — start with gap detection, escalate to adapt
 
 ## Connection to the wider ecosystem
 
-This is the "grey area" between planning and execution. The planning code is quick to write in R or Python (especially with structured tools like `compute_source_window` and `rust_gen_img_proj_transform` available), but the decisions it makes determine the efficiency of the entire pipeline. Keeping it in the scripting layer means it's easy to experiment with different strategies, profile them against real workloads, and harden the ones that matter.
+This is the grey area between planning and execution. The planning code is quick to write in R or Python (especially with structured tools like compute_source_window and rust_gen_img_proj_transform available), but the decisions it makes determine the efficiency of the entire pipeline. Keeping it in the scripting layer means it is easy to experiment with different strategies, profile them against real workloads, and harden the ones that matter.
 
 The cached-plan approach also connects to the broader question of interoperability with tiling systems (MGRS, Mercator tile pyramids, polar grids). Each tiling system defines a finite set of destination geometries, and each source CRS defines the transform characteristics. The cross product is large but highly redundant.
+
+## Implementation status (v0.0.1.9011)
+
+The split-read strategy is fully implemented across Rust and R.
+
+### Rust layer (source_window.rs)
+
+collect_chunk_list recursively subdivides destination tiles with low fill ratio, matching GDAL CollectChunkListInternal. find_discontinuity_range scans multiple destination rows, transforms to source coords, and finds the column range where source-X jumps. This is a cogcache innovation: GDAL achieves the same split indirectly via the warp memory budget, which we do not have.
+
+Three-way split: left chunk (compact east), narrow middle strip (straddles discontinuity), right chunk (compact west). Antimeridian snap forces fill_ratio = 0.01 to ensure subdivision triggers.
+
+build_source_grid and refine_from_source implement the forward probe (ComputeSourceWindowStartingFromSource). Implemented but not yet integrated into the main pipeline.
+
+### R layer (R/plan.R)
+
+plan_warp_reads wraps rust_collect_chunk_list and post-processes chunks. detect_split_strips transforms the middle strip destination pixels to source coords, detects the bimodal source-X distribution, and returns two compact read windows.
+
+### Measured results (Fiji LCC tile [5,3], GEBCO)
+
+Total source pixels: 1,395,762 (1.4% of full-width 99,273,600). 70x reduction. Adjacent non-straddling tiles are unaffected (single compact chunk, fill_ratio ~1.0).
+
+### What is next
+
+Warp execution for split-read chunks: read each strip, warp independently, merge non-nodata. Forward probe integration for polar robustness. Pole singularity testing with IBCSO.

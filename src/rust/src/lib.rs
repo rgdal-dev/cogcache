@@ -610,6 +610,96 @@ fn rust_apply_warp(
     Ok(r!(dst_pixels))
 }
 
+/// Recursively subdivide a destination window into chunks with efficient source windows.
+///
+/// When a destination tile straddles a coordinate singularity (e.g. the antimeridian),
+/// the source window can span the entire source raster. This function recursively
+/// splits the destination until each chunk has a compact source window.
+///
+/// Returns a list of chunk plans, each containing:
+/// - src_xoff, src_yoff, src_xsize, src_ysize: source window
+/// - dst_xoff, dst_yoff, dst_xsize, dst_ysize: destination sub-window
+/// - fill_ratio: source fill ratio for this chunk
+///
+/// @param src_crs Character CRS string for source
+/// @param src_gt Numeric vector length 6 (source geotransform)
+/// @param src_dim Integer vector c(ncol, nrow) of source raster
+/// @param dst_crs Character CRS string for destination
+/// @param dst_gt Numeric vector length 6 (destination geotransform)
+/// @param dst_off Integer vector c(col_off, row_off) destination window offset
+/// @param dst_size Integer vector c(ncol, nrow) destination window size
+/// @param resample_padding Integer kernel padding (0=near, 1=bilinear, 2=cubic, 3=lanczos)
+/// @param min_fill_ratio Numeric threshold for subdivision (default 0.5)
+/// @param min_dst_size Integer minimum destination dimension to allow splitting (default 8)
+/// @return List of chunk plan lists
+/// @export
+#[extendr]
+fn rust_collect_chunk_list(
+    src_crs: &str,
+    src_gt: &[f64],
+    src_dim: &[i32],
+    dst_crs: &str,
+    dst_gt: &[f64],
+    dst_off: &[i32],
+    dst_size: &[i32],
+    resample_padding: i32,
+    min_fill_ratio: f64,
+    min_dst_size: i32,
+) -> extendr_api::Result<Robj> {
+    if src_gt.len() != 6 || dst_gt.len() != 6 {
+        return Err(Error::Other("geotransform must be length 6".to_string()));
+    }
+    if src_dim.len() != 2 || dst_off.len() != 2 || dst_size.len() != 2 {
+        return Err(Error::Other(
+            "src_dim, dst_off, dst_size must be length 2".to_string(),
+        ));
+    }
+
+    let src_gt_arr: [f64; 6] = src_gt
+        .try_into()
+        .map_err(|_| Error::Other("src_gt conversion failed".to_string()))?;
+    let dst_gt_arr: [f64; 6] = dst_gt
+        .try_into()
+        .map_err(|_| Error::Other("dst_gt conversion failed".to_string()))?;
+
+    let transformer = transform::GenImgProjTransformer::new(
+        src_crs, src_gt_arr, dst_crs, dst_gt_arr,
+    )
+    .map_err(Error::Other)?;
+
+    let chunks = source_window::collect_chunk_list(
+        &transformer,
+        [src_dim[0], src_dim[1]],
+        [dst_off[0], dst_off[1]],
+        [dst_size[0], dst_size[1]],
+        resample_padding,
+        min_fill_ratio,
+        min_dst_size,
+        None,
+    );
+
+    // Convert to R list of lists
+    let chunk_list: Vec<Robj> = chunks
+        .iter()
+        .map(|c| {
+            list!(
+                src_xoff = c.src_window.xoff,
+                src_yoff = c.src_window.yoff,
+                src_xsize = c.src_window.xsize,
+                src_ysize = c.src_window.ysize,
+                dst_xoff = c.dst_off[0],
+                dst_yoff = c.dst_off[1],
+                dst_xsize = c.dst_size[0],
+                dst_ysize = c.dst_size[1],
+                fill_ratio = c.src_window.fill_ratio
+            )
+            .into()
+        })
+        .collect();
+
+    Ok(List::from_values(chunk_list).into())
+}
+
 // ===========================================================================
 // Module registration
 // ===========================================================================
@@ -623,6 +713,7 @@ extendr_module! {
     fn rust_warp_approx;
     fn rust_warp_resample;
     fn rust_compute_source_window;
+    fn rust_collect_chunk_list;
     fn rust_warp_map;
     fn rust_apply_warp;
 }

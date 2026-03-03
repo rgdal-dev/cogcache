@@ -470,3 +470,32 @@ print.warp_plan <- function(x, ...) {
   }
   invisible(x)
 }
+
+
+
+## EPSG:4326 source (e.g. a global lonlat mosaic) -> Antarctic polar stereo
+wp <- warp_plan(
+  dest_extent   = c(-3e6, 3e6, -3e6, 3e6),
+  dest_dim      = c(6000L, 6000L),
+  dest_crs      = "+proj=stere +lat_0=-90 +lon_0=0",
+  source_extent = c(-180, 180, -90, 90),
+  source_dim    = c(36000L, 18000L),
+  source_crs    = "EPSG:4326",
+  dest_tile_dim = c(256L, 256L),
+  source_tile_dim = c(256L, 256L)
+)
+
+wp
+## Warp plan: 576 dest tiles x 9936 source tiles -> ??? mappings
+##   Discontinuous: N tile pairs
+##   Areal scale: [...]
+##   Max anisotropy: ...
+
+## Which dest tiles are problematic?
+wp[wp$discontinuous, ]
+
+## Which dest tiles need fine subdivision?
+wp[wp$subdiv >= 3, ]
+
+## How many source tiles does each dest tile need?
+table(table(paste(wp$dest_tile_col, wp$dest_tile_row)))

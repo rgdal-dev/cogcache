@@ -292,5 +292,9 @@ For anyone reading the GDAL source alongside this code:
 | `Transformer` trait | `GDALTransformerFunc` typedef | gdal_alg.h |
 | `transform_scanline` | top of `GWKNearestThread` | gdalwarpkernel.cpp ~L5520 |
 | `warp_nearest` | `GWKNearestThread` | gdalwarpkernel.cpp ~L5510 |
-| (future) `ApproxTransformer` | `GDALApproxTransform` | gdaltransformer.cpp ~L3500 |
-| (future) `compute_source_window` | `ComputeSourceWindow` | gdalwarpoperation.cpp ~L3015 |
+| `ApproxTransformer` | `GDALApproxTransform` | gdaltransformer.cpp ~L3500 |
+| `compute_source_window` | `ComputeSourceWindow` | gdalwarpoperation.cpp ~L2751-3367 |
+| `collect_chunk_list` | `CollectChunkListInternal` | gdalwarpoperation.cpp ~L1456-1624 |
+| `find_discontinuity_range` | *(no GDAL equivalent — GDAL uses memory budget)* | — |
+| `build_source_grid` | `ComputeSourceWindowStartingFromSource` setup | gdalwarpoperation.cpp ~L2656-2703 |
+| `refine_from_source` | `ComputeSourceWindowStartingFromSource` per-call | gdalwarpoperation.cpp ~L2720-2747 |

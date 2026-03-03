@@ -141,6 +141,31 @@ rust_warp_resample <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pi
 #' @export
 rust_compute_source_window <- function(src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_off, dst_size, resample_padding) .Call(wrap__rust_compute_source_window, src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_off, dst_size, resample_padding)
 
+#' Recursively subdivide a destination window into chunks with efficient source windows.
+#'
+#' When a destination tile straddles a coordinate singularity (e.g. the antimeridian),
+#' the source window can span the entire source raster. This function recursively
+#' splits the destination until each chunk has a compact source window.
+#'
+#' Returns a list of chunk plans, each containing:
+#' - src_xoff, src_yoff, src_xsize, src_ysize: source window
+#' - dst_xoff, dst_yoff, dst_xsize, dst_ysize: destination sub-window
+#' - fill_ratio: source fill ratio for this chunk
+#'
+#' @param src_crs Character CRS string for source
+#' @param src_gt Numeric vector length 6 (source geotransform)
+#' @param src_dim Integer vector c(ncol, nrow) of source raster
+#' @param dst_crs Character CRS string for destination
+#' @param dst_gt Numeric vector length 6 (destination geotransform)
+#' @param dst_off Integer vector c(col_off, row_off) destination window offset
+#' @param dst_size Integer vector c(ncol, nrow) destination window size
+#' @param resample_padding Integer kernel padding (0=near, 1=bilinear, 2=cubic, 3=lanczos)
+#' @param min_fill_ratio Numeric threshold for subdivision (default 0.5)
+#' @param min_dst_size Integer minimum destination dimension to allow splitting (default 8)
+#' @return List of chunk plan lists
+#' @export
+rust_collect_chunk_list <- function(src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_off, dst_size, resample_padding, min_fill_ratio, min_dst_size) .Call(wrap__rust_collect_chunk_list, src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_off, dst_size, resample_padding, min_fill_ratio, min_dst_size)
+
 #' Compute a warp mapping (legacy interface, wraps GenImgProjTransformer).
 #' @param src_crs Character CRS string
 #' @param src_gt Numeric vector length 6
