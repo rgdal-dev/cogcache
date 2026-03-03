@@ -1,9 +1,8 @@
 # cogcache 0.0.1.9009
 
-Cogcache is a stepping stone toward vwarp — a decomposed, inspectable
-reimplementation of GDAL's warp pipeline in Rust, callable from R via extendr.
-This version establishes the core warp architecture with validated resampling
-kernels.
+Cogcache is a stepping stone toward a decomposed, inspectable reimplementation
+of GDAL's warp pipeline in Rust, callable from R via extendr. This version
+establishes the core warp architecture with validated resampling kernels.
 
 ## Warp pipeline
 
@@ -37,15 +36,15 @@ as part of the resampling story.
 
 Grid operations (inverse geotransform, extent/dimension conversions) use the
 vaster-rs crate from hypertidy/vaster-rs, replacing an earlier inline `grid.rs`
-module. This aligns cogcache with vaster's role as the foundational grid
-arithmetic layer across the hypertidy ecosystem.
+module. This is a light dependency that separates logic that is calculated mostly
+inline in the GDAL implementation. 
 
 ## COG tile access
 
 Direct HTTP fetch and DEFLATE decoding of COG tiles via `rust_fetch_decode_tile`
 and `rust_decode_tile`, bypassing GDAL's I/O layer. Currently assumes UInt16
 data type. This is a prototype convenience for development — production I/O
-strategy (direct-decode vs GDAL-via-vsicurl) is a vwarp design decision.
+strategy (direct-decode vs GDAL-via-vsicurl) is a future design decision.
 
 ## Error handling
 
@@ -66,4 +65,4 @@ pre-scanline architecture and will be removed at the vwarp rename.
 
 Design rationale and architecture decisions are in
 `inst/design-docs/VWARP_VISION.md` and `src/rust/src/DESIGN_NOTES.md`. Test and
-diagnostic scripts are in `inst/test-scripts/`.
+diagnostic and demonstration scripts are in `inst/[test|demo|diag]/-scripts/`.
