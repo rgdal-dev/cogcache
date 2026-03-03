@@ -15,3 +15,5 @@ Config/rextendr/version: 0.4.2
 Depends: 
     R (>= 4.2)
 SystemRequirements: Cargo (Rust's package manager), rustc >= 1.65.0, xz
+URL: https://github.com/rgdal-dev/cogcache
+BugReports: https://github.com/rgdal-dev/cogcache/issues
