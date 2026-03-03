@@ -163,6 +163,17 @@ pub fn compute_source_window(
         resample_padding
     };
 
+    // Extra pixel beyond the kernel radius to ensure interpolation kernels
+    // always have their full neighbourhood. Without this, transformed coords
+    // near the buffer edge can put kernel pixels outside the buffer, forcing
+    // the weight-renormalisation fallback path which produces different values
+    // than GDAL. GDAL achieves this via nExtraSrcPixels (gdalwarpoperation.cpp
+    // ~L3270). See: bilinear edge bug at pixel [1,157] in GEBCO diagnostics.
+    if resample_padding > 0 {
+        x_radius += 1;
+        y_radius += 1;
+    }
+
     // Extra padding if there were failures (GDAL lines 3293–3297)
     if n_failed > 0 {
         x_radius += 10;
