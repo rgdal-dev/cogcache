@@ -69,6 +69,7 @@ for (ty in seq_len(n_tiles_y)) {
       resample_padding = 0L
     )
 
+
     if (is.null(sw)) {
       cat(sprintf("  [%d,%d] NULL (no valid transforms)\n", tx, ty))
       next
