@@ -93,6 +93,31 @@ rust_warp_scanline <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pi
 #' @export
 rust_warp_approx <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata, max_error) .Call(wrap__rust_warp_approx, src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata, max_error)
 
+#' Warp source pixels with selectable resampling algorithm.
+#'
+#' Same as rust_warp_approx but with a `resample` parameter:
+#'   "near" = nearest neighbour (default)
+#'   "bilinear" = bilinear (2×2)
+#'   "cubic" = cubic convolution (4×4, Catmull-Rom)
+#'   "lanczos" = Lanczos windowed sinc (6×6)
+#'
+#' @param src_crs Character CRS string
+#' @param src_gt Numeric vector length 6
+#' @param dst_crs Character CRS string
+#' @param dst_gt Numeric vector length 6
+#' @param dst_dim Integer vector c(ncol, nrow)
+#' @param src_pixels Integer vector (source pixel buffer, row-major)
+#' @param src_ncol Integer source buffer width
+#' @param src_nrow Integer source buffer height
+#' @param src_col_off Integer source buffer column offset in full image
+#' @param src_row_off Integer source buffer row offset in full image
+#' @param nodata Integer nodata value
+#' @param max_error Numeric max interpolation error in pixels (default 0.125)
+#' @param resample Character resampling method: "near", "bilinear", "cubic", "lanczos"
+#' @return Integer vector of warped pixels (row-major)
+#' @export
+rust_warp_resample <- function(src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata, max_error, resample) .Call(wrap__rust_warp_resample, src_crs, src_gt, dst_crs, dst_gt, dst_dim, src_pixels, src_ncol, src_nrow, src_col_off, src_row_off, nodata, max_error, resample)
+
 #' Compute the source pixel window needed for a destination window.
 #'
 #' This is the GDAL ComputeSourceWindow equivalent: given a destination
