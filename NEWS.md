@@ -1,3 +1,37 @@
+# cogcache 0.0.1.9010
+
+## Overview selection
+
+New R function `select_overview()` picks the coarsest overview level whose
+resolution is still finer than the destination, keeping the warp kernel
+operating at ~1:1 source/destination ratio. At this ratio, bilinear and cubic
+are bit-identical to GDAL (65536/65536 match on GEBCO test tile). Lanczos shows
+minor differences (max_diff=80, corr=0.999991) due to residual kernel width
+scaling at ratios slightly above 1.0.
+
+The overview selection logic matches GDAL's `-ovr AUTO` behaviour: walk the
+overview pyramid, select the level where the overview-relative source window is
+at least as large as the destination in both dimensions. Uses `OVERVIEW_LEVEL`
+open option in gdalraster for clean access to overview bands.
+
+## Antimeridian source-read characterisation
+
+Diagnostic analysis of antimeridian-crossing tiles (Fiji LCC, GEBCO) shows the
+source X distribution is cleanly bimodal with a 98% gap. The existing
+`compute_source_window` antimeridian heuristic correctly flags these tiles but
+reads the entire latitude band (97.9M pixels). A split read of the two actual
+source strips requires 1.3M pixels — a 70× reduction. Detection and split-read
+strategy documented in `inst/design-docs/warp-plan-efficiency-notes.md`.
+
+## Source window padding
+
+Added +1 extra pixel padding in `compute_source_window` for interpolation
+kernels, ensuring bilinear/cubic/lanczos neighbourhoods are fully available at
+buffer edges. This matches GDAL's `nExtraSrcPixels` logic.
+
+
+
+
 # cogcache 0.0.1.9009
 
 Cogcache is a stepping stone toward a decomposed, inspectable reimplementation

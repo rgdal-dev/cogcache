@@ -165,6 +165,7 @@ for (tm in tiles) {
     nodata      = as.integer(nodata),
     max_error   = 0.125
   )
+  ximage(matrix(tile_pixels, as.integer(tm$dst_nrow), byrow = TRUE), tm$tile_ext, add = T)
   t_warp <- (proc.time() - t0)[3]
   warp_total <- warp_total + t_warp
 

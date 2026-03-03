@@ -7,7 +7,8 @@
 
 <!-- badges: end -->
 
-The goal of cogcache is to …
+The goal of cogcache is to attempt a conversion of the GDAL warper
+pipeline to Rust.
 
 ## Installation
 
