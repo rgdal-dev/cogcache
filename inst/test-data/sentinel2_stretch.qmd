@@ -1,0 +1,221 @@
+---
+title: "Contrast stretching for a Sentinel-2 scene"
+format:
+  html:
+    embed-resources: true
+---
+
+## Finding a scene
+
+First we write a quick plot to find the MGRS code at (bottom left corner of) the tile we want.
+
+```{r tile}
+p <- expand.grid(143:149, -44:-40)
+plot(p, asp = 1/cos(-40 * pi/180))
+maps::map(add = TRUE)
+text(p, lab = geographiclib::mgrs_fwd(as.matrix(p) * 1.0, precision = 0), pos = 1, cex = .7)
+```
+
+Then look up a scene for that tile on a date we already know has one.
+
+```{r scene}
+## remotes::install_github("hypertidy/sds")
+qu <- sds::stacit(c("55GDN"), "2026-02-27")
+## get the STAC monstrosity and find the href:
+js <- jsonlite::fromJSON(qu)
+sprintf("/vsicurl/%s", js$features$assets$red$href)
+```
+
+## Stretch functions
+
+All functions return values in **[0, 1]**. Named with the `s2_` prefix to avoid clashing with
+`terra::stretch()`.
+
+```{r workers}
+library(terra)
+
+# 1. Linear percent clip
+# low/high are the natural UX knobs; 2%/98% is a solid default,
+# tighter for low-contrast scenes.
+s2_stretch_linear <- function(x, low = 0.02, high = 0.98) {
+  v  <- terra::values(x, na.rm = TRUE)
+  lo <- quantile(v, low,  na.rm = TRUE)
+  hi <- quantile(v, high, na.rm = TRUE)
+  terra::clamp(x, lo, hi, values = TRUE) |>
+    (\(r) (r - lo) / (hi - lo))()
+}
+
+# 2. Log stretch (per-band minimum offset, guards log(0))
+# Use only on integer overview values, not native-res reflectance — see gotcha below.
+s2_stretch_log <- function(x, offset = NULL) {
+  if (is.null(offset)) {
+    mn     <- min(terra::global(x, "min", na.rm = TRUE)[[1]])
+    offset <- if (mn <= 0) abs(mn) + 1 else 0
+  }
+  log1p(x + offset) |> s2_stretch_linear()
+}
+
+# 3. Log-relative: subtract global minimum before log.
+# + 1 guards against log(0) when a pixel equals the minimum exactly.
+s2_stretch_log_relative <- function(x, low = 0.02, high = 0.98) {
+  mn <- min(terra::global(x, "min", na.rm = TRUE)[[1]])
+  log(x - mn + 1) |> s2_stretch_linear(low, high)
+}
+
+# Joint variant: single global minimum AND a single quantile clip across all
+# bands combined — preserves inter-band luminance relationships for true-colour RGB.
+# In practice the visual difference from per-band is subtle for well-exposed scenes;
+# the real fix for colour balance is the shared minimum subtraction.
+s2_stretch_log_relative_joint <- function(x, low = 0.02, high = 0.98) {
+  mn     <- min(terra::global(x, "min", na.rm = TRUE)[[1]])
+  logged <- log(x - mn + 1)
+  v      <- as.vector(terra::values(logged, na.rm = TRUE))  # flatten all bands
+  lo     <- quantile(v, low,  na.rm = TRUE)
+  hi     <- quantile(v, high, na.rm = TRUE)
+  terra::clamp(logged, lo, hi, values = TRUE) |>
+    (\(r) (r - lo) / (hi - lo))()
+}
+
+# 4. Square root — gentler than log, good middle ground.
+s2_stretch_sqrt <- function(x) {
+  mn     <- min(terra::global(x, "min", na.rm = TRUE)[[1]])
+  offset <- if (mn < 0) abs(mn) else 0
+  sqrt(x + offset) |> s2_stretch_linear()
+}
+
+# 5. Histogram equalisation.
+# Good when interesting detail spans simultaneously deep shadow and bright areas.
+s2_stretch_histeq <- function(x, n = 256) {
+  v      <- terra::values(x, na.rm = TRUE)
+  breaks <- quantile(v, probs = seq(0, 1, length.out = n + 1), na.rm = TRUE)
+  out    <- x
+  terra::values(out) <- findInterval(terra::values(x), unique(breaks)) /
+                         length(unique(breaks))
+  out
+}
+```
+
+### Dispatcher
+
+`joint` defaults to `TRUE` for multi-band input so that RGB composites share a common
+stretch across all three channels.
+
+```{r dispatcher}
+s2_stretch <- function(x,
+                       method = c("linear", "log", "sqrt", "histeq", "log_relative"),
+                       low = 0.02, high = 0.98,
+                       joint = terra::nlyr(x) > 1, ...) {
+  method <- match.arg(method)
+  switch(method,
+    linear = if (joint) {
+               v  <- terra::values(x, na.rm = TRUE)
+               lo <- quantile(v, low,  na.rm = TRUE)
+               hi <- quantile(v, high, na.rm = TRUE)
+               terra::clamp(x, lo, hi, values = TRUE) |>
+                 (\(r) (r - lo) / (hi - lo))()
+             } else s2_stretch_linear(x, low, high),
+    log_relative = if (joint) s2_stretch_log_relative_joint(x, low, high)
+                   else       s2_stretch_log_relative(x, low, high),
+    log    = s2_stretch_log(x, ...),
+    sqrt   = s2_stretch_sqrt(x),
+    histeq = s2_stretch_histeq(x, ...)
+  )
+}
+
+# terra::plotRGB() requires [0, 255]; terra::stretch() is used solely for that
+# byte-scaling side effect, applied to already-stretched [0, 1] data.
+pltrgb <- function(x, ...) {
+  terra::plotRGB(terra::stretch(x), ...)
+}
+```
+
+## Comparing stretch methods
+
+```{r plots, fig.width=14, fig.height=10}
+library(terra)
+
+band <- c("B04", "B03", "B02")
+dsn  <- glue::glue("vrt:///vsicurl/https://e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com/sentinel-2-c1-l2a/55/G/DN/2026/2/S2C_T55GDN_20260227T000650_L2A/{band}.tif?ovr=2")
+r    <- terra::rast(dsn)
+
+
+mar <- par("mar")
+op <- par(mfcol = c(2, 3), mar = mar + c(1, 0, 1, 0) * 2)
+pltrgb(s2_stretch(r, "linear"),                       main = "linear")
+pltrgb(s2_stretch(r, "log"),                          main = "log")
+pltrgb(s2_stretch(r, "sqrt"),                         main = "sqrt")
+pltrgb(s2_stretch(r, "histeq"),                       main = "histeq")
+pltrgb(s2_stretch(r, "log_relative", joint = FALSE),  main = "log_relative")
+pltrgb(s2_stretch(r, "log_relative"),                 main = "log_relative_joint")
+
+par(op)
+band <- "B04"
+dsn  <- glue::glue("vrt:///vsicurl/https://e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com/sentinel-2-c1-l2a/55/G/DN/2026/2/S2C_T55GDN_20260227T000650_L2A/{band}.tif?ovr=2")
+r    <- terra::rast(dsn)
+
+par(mfcol = c(2, 3))
+terra::plot(s2_stretch(r, "linear"),       main = "linear")
+terra::plot(s2_stretch(r, "sqrt"),         main = "sqrt")
+terra::plot(s2_stretch(r, "log"),          main = "log")
+terra::plot(s2_stretch(r, "histeq"),       main = "histeq")
+terra::plot(s2_stretch(r, "log_relative"), main = "log_relative")
+```
+
+## What the comparisons showed
+
+### Single band (red, tile 55GDN, 2026-02-27)
+
+This scene has a bimodal distribution — dark water/shadow and bright crop/urban, with a broad
+vegetated middle. Log stretch wins because it compresses the bright tail *before* the percent clip
+sees it, opening up tonal room for the dominant mid-range.
+
+| Method | Character |
+|---|---|
+| linear | Muddy mid-tones, dominated by bright outliers |
+| sqrt | Marginally better than linear, similar feel |
+| log | Best tonal separation; vegetation detail clear |
+| log_relative | Same as log for single band; `+ 1` guards log(0) at the minimum |
+| histeq | Over-equalised; loses natural luminance relationships |
+
+### RGB (B04/B03/B02 true colour)
+
+Per-band minimum subtraction breaks colour balance — each band's zero point shifts
+independently and water ends up blue-shifted. The fix is a single global minimum across all
+bands. Using a joint quantile clip on top of that is technically more correct but visually
+negligible for well-exposed scenes; the `low`/`high` knobs remain the meaningful UX parameters.
+
+| Method | Character |
+|---|---|
+| linear | Clean true colour, slightly flat |
+| sqrt | Nearly identical to linear for well-exposed scenes |
+| log | Good tonal range; colour shifts if per-band minimum used |
+| log_relative (per-band) | Blue-shifted water; avoid for RGB |
+| log_relative (joint) | Best balance — log compression with colour fidelity |
+| histeq | Too aggressive; unnatural colour casts |
+
+### Rules of thumb
+
+- **Single band / false colour:** per-band stretch is fine; `log_relative` recommended
+- **True colour RGB:** `joint = TRUE` (the default); `log_relative` is the sweet spot
+- **Cloudy or snowy scenes:** tighten `high` to e.g. `0.90` to stop bright surfaces blowing out
+
+## The terra/overview scaling gotcha
+
+When terra reads Sentinel-2 at **native resolution** it applies the stored scale/offset metadata
+(typically ÷ 10000), yielding reflectance values < 1. Log transforms behave very differently at
+this scale — `log(0.03)` is strongly negative — and the minimum-subtraction approach doesn't
+rescue it the same way.
+
+When reading an **overview** (a lower-resolution pyramid level) the raw integers are returned
+as-is (values in the thousands), so log works naturally. Always check which regime you're in:
+
+```r
+terra::scoff(r)  # scale, offset stored in file metadata; scale != 1 means reflectance
+```
+
+Reading overview level 2 explicitly via a VRT [vrt:// connection string](https://gdal.org/en/stable/drivers/raster/vrt.html#vrt-connection-string): 
+
+```r
+dsn <- "vrt:///vsicurl/https://.../B04.tif?ovr=2"
+r   <- terra::rast(dsn)
+```

@@ -1,4 +1,6 @@
-# cogcache 0.0.1.9011
+# cogcache 0.0.1.9012
+
+* Rust core has now been separated out to 'hypertidy/rwarp' (or local dir). 
 
 ## Chunk list subdivision (antimeridian efficiency)
 
