@@ -12,3 +12,7 @@ flate2 = "1"
 ureq = "2"
 proj = { version = "0.28", features = ["bundled_proj"] }
 vaster = { git = "https://github.com/hypertidy/vaster-rs" }
+#rwarp = { git = "https://github.com/hypertidy/rwarp" }
+rwarp = { path = "../../../rwarp" }
+
+

@@ -13,10 +13,8 @@ use extendr_api::prelude::*;
 use flate2::read::ZlibDecoder;
 use std::io::Read;
 
-pub mod transform;
-pub mod approx;
-pub mod source_window;
-pub mod warp;
+// Warp pipeline from rwarp crate
+use rwarp::{transform, approx, source_window, warp};
 
 // ===========================================================================
 // Tile decode (existing, unchanged)
@@ -720,16 +718,3 @@ extendr_module! {
 
 
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_antarctic_crs() {
-        let proj = proj::Proj::new_known_crs("EPSG:3857", "EPSG:3031", None).unwrap();
-        let result = proj.convert((7006000.0, -10340500.0)).unwrap();
-        println!("3031: {:?}", result);
-
-        let proj2 = proj::Proj::new_known_crs("EPSG:3857", "EPSG:3412", None).unwrap();
-        let result2 = proj2.convert((7006000.0, -10340500.0)).unwrap();
-        println!("3412: {:?}", result2);
-    }
-}

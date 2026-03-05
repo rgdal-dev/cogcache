@@ -67,6 +67,7 @@ dependencies = [
  "extendr-api",
  "flate2",
  "proj",
+ "rwarp",
  "ureq",
  "vaster",
 ]
@@ -524,6 +525,14 @@ dependencies = [
  "ring",
  "rustls-pki-types",
  "untrusted",
+]
+
+[[package]]
+name = "rwarp"
+version = "0.1.0"
+dependencies = [
+ "proj",
+ "vaster",
 ]
 
 [[package]]
