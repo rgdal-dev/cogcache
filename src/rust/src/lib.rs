@@ -13,8 +13,9 @@ use extendr_api::prelude::*;
 use flate2::read::ZlibDecoder;
 use std::io::Read;
 
+use rwarp::Transformer;
 // Warp pipeline from rwarp crate
-use rwarp::{transform, approx, source_window, warp};
+use rwarp::{transform, approx, source_window, warp, gcp_transform};
 
 // ===========================================================================
 // Tile decode (existing, unchanged)
@@ -698,6 +699,136 @@ fn rust_collect_chunk_list(
     Ok(List::from_values(chunk_list).into())
 }
 
+
+// ============================================================
+// PATCH for cogcache/src/rust/src/lib.rs
+// ============================================================
+//
+// 1. Change the rwarp import line to include gcp_transform:
+//
+//    BEFORE:
+//      use rwarp::{transform, approx, source_window, warp};
+//
+//    AFTER:
+//      use rwarp::{transform, gcp_transform, approx, source_window, warp};
+//
+// 2. Add these three functions BEFORE the extendr_module! block.
+//
+// 3. Add the three fn names to the extendr_module! block.
+//
+// ============================================================
+
+// ===========================================================================
+// extendr wrappers — GCP polynomial transformer
+// ===========================================================================
+
+/// Create a GCP polynomial transformer and evaluate forward (pixel/line -> geo).
+///
+/// @param gcp_pixel Numeric vector of GCP pixel coordinates
+/// @param gcp_line Numeric vector of GCP line coordinates
+/// @param gcp_geo_x Numeric vector of GCP georeferenced X coordinates
+/// @param gcp_geo_y Numeric vector of GCP georeferenced Y coordinates
+/// @param order Integer polynomial order (1, 2, or 3; 0 = auto)
+/// @param eval_pixel Numeric vector of pixel coordinates to transform
+/// @param eval_line Numeric vector of line coordinates to transform
+/// @return List with `x`, `y` numeric vectors and `order` integer
+/// @export
+#[extendr]
+fn rust_gcp_transform_fwd(
+    gcp_pixel: &[f64],
+    gcp_line: &[f64],
+    gcp_geo_x: &[f64],
+    gcp_geo_y: &[f64],
+    order: i32,
+    eval_pixel: &[f64],
+    eval_line: &[f64],
+) -> extendr_api::Result<Robj> {
+    let t = rwarp::gcp_transform::GcpTransformer::new(
+        gcp_pixel, gcp_line, gcp_geo_x, gcp_geo_y, order as usize,
+    )
+    .ok_or_else(|| Error::Other(
+        "GCP polynomial fit failed (insufficient GCPs or singular system)".to_string()
+    ))?;
+
+    let mut x = eval_pixel.to_vec();
+    let mut y = eval_line.to_vec();
+    t.transform(false, &mut x, &mut y);
+
+    let result = list!(x = x, y = y, order = t.order() as i32);
+    Ok(result.into())
+}
+
+/// Create a GCP polynomial transformer and evaluate inverse (geo -> pixel/line).
+///
+/// @param gcp_pixel Numeric vector of GCP pixel coordinates
+/// @param gcp_line Numeric vector of GCP line coordinates
+/// @param gcp_geo_x Numeric vector of GCP georeferenced X coordinates
+/// @param gcp_geo_y Numeric vector of GCP georeferenced Y coordinates
+/// @param order Integer polynomial order (1, 2, or 3; 0 = auto)
+/// @param eval_x Numeric vector of geo X coordinates to inverse-transform
+/// @param eval_y Numeric vector of geo Y coordinates to inverse-transform
+/// @return List with `pixel`, `line` numeric vectors and `order` integer
+/// @export
+#[extendr]
+fn rust_gcp_transform_inv(
+    gcp_pixel: &[f64],
+    gcp_line: &[f64],
+    gcp_geo_x: &[f64],
+    gcp_geo_y: &[f64],
+    order: i32,
+    eval_x: &[f64],
+    eval_y: &[f64],
+) -> extendr_api::Result<Robj> {
+    let t = rwarp::gcp_transform::GcpTransformer::new(
+        gcp_pixel, gcp_line, gcp_geo_x, gcp_geo_y, order as usize,
+    )
+    .ok_or_else(|| Error::Other(
+        "GCP polynomial fit failed (insufficient GCPs or singular system)".to_string()
+    ))?;
+
+    let mut x = eval_x.to_vec();
+    let mut y = eval_y.to_vec();
+    t.transform(true, &mut x, &mut y);
+
+    let result = list!(pixel = x, line = y, order = t.order() as i32);
+    Ok(result.into())
+}
+
+/// Return the fitted polynomial coefficients without transforming points.
+///
+/// @param gcp_pixel Numeric vector of GCP pixel coordinates
+/// @param gcp_line Numeric vector of GCP line coordinates
+/// @param gcp_geo_x Numeric vector of GCP georeferenced X coordinates
+/// @param gcp_geo_y Numeric vector of GCP georeferenced Y coordinates
+/// @param order Integer polynomial order (1, 2, or 3; 0 = auto)
+/// @return List with forward and reverse coefficient vectors and order
+/// @export
+#[extendr]
+fn rust_gcp_coefficients(
+    gcp_pixel: &[f64],
+    gcp_line: &[f64],
+    gcp_geo_x: &[f64],
+    gcp_geo_y: &[f64],
+    order: i32,
+) -> extendr_api::Result<Robj> {
+    let t = rwarp::gcp_transform::GcpTransformer::new(
+        gcp_pixel, gcp_line, gcp_geo_x, gcp_geo_y, order as usize,
+    )
+    .ok_or_else(|| Error::Other(
+        "GCP polynomial fit failed (insufficient GCPs or singular system)".to_string()
+    ))?;
+
+    let result = list!(
+        order = t.order() as i32,
+        to_geo_x = t.to_geo_x_coeffs().to_vec(),
+        to_geo_y = t.to_geo_y_coeffs().to_vec(),
+        from_geo_pixel = t.from_geo_pixel_coeffs().to_vec(),
+        from_geo_line = t.from_geo_line_coeffs().to_vec()
+    );
+    Ok(result.into())
+}
+
+
 // ===========================================================================
 // Module registration
 // ===========================================================================
@@ -714,6 +845,10 @@ extendr_module! {
     fn rust_collect_chunk_list;
     fn rust_warp_map;
     fn rust_apply_warp;
+    fn rust_gcp_transform_fwd;
+    fn rust_gcp_transform_inv;
+    fn rust_gcp_coefficients;
+
 }
 
 

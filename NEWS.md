@@ -2,6 +2,48 @@
 
 * Rust core has now been separated out to 'hypertidy/rwarp' (or local dir). 
 
+## GCP polynomial transformer
+
+New Rust module `gcp_transform` in the rwarp crate implements GDAL's
+`GDALCreateGCPTransformer` / `GDALGCPTransform` from `alg/gdal_crs.c`.
+Fits least-squares polynomials (order 1–3) from Ground Control Points
+mapping pixel/line to georeferenced coordinates.
+
+Both forward (pixel/line → geo) and reverse (geo → pixel/line) polynomials
+are fit independently at construction time using coordinate centring and
+Gaussian elimination with partial pivoting, matching GDAL's numerical
+approach. Implements the `Transformer` trait so it plugs directly into the
+existing approx transformer and warp kernel.
+
+Validated against GDAL's `gdaltransform` using fabricated GCPs from a
+Sentinel-2 tile (55GDN, southwest Tasmania). Results are bit-identical at
+display precision across all three polynomial orders, with sub-micrometre
+differences (~1e-6 m) attributable to floating point arithmetic.
+
+Accuracy by order (25 GCPs, 5 test points, pixel/line → lon/lat vs exact
+geotransform + PROJ):
+
+- Order 1 (affine): ~100 m error (expected — UTM→WGS84 curvature)
+- Order 2 (quadratic): <2 m error, sub-pixel roundtrip
+- Order 3 (cubic): effectively zero (<1e-5 m)
+
+New exported R functions: `rust_gcp_transform_fwd()`,
+`rust_gcp_transform_inv()`, `rust_gcp_coefficients()`.
+
+## rwarp crate extraction
+
+The core warp pipeline modules (transform, approx, source_window, warp) now
+live in the standalone `rwarp` Rust crate (https://github.com/hypertidy/rwarp),
+with cogcache depending on it via Cargo. The `gcp_transform` module is the
+first new module developed directly in rwarp. cogcache provides the extendr
+bindings and R planning layer on top.
+
+## Sentinel-2 STAC test data
+
+Test scripts now use 55GDN (southwest Tasmania) from Element84 Earth Search
+STAC, accessed via `sds::stacit()` + `geographiclib::mgrs_fwd()`. This
+provides familiar terrain for visual validation of warp outputs.
+
 ## Chunk list subdivision (antimeridian efficiency)
 
 New Rust function `collect_chunk_list` implements GDAL's

@@ -188,5 +188,42 @@ rust_warp_map <- function(src_crs, src_gt, src_dim, dst_crs, dst_gt, dst_dim) .C
 #' @export
 rust_apply_warp <- function(src_pixels, src_ncol, src_nrow, src_cols, src_rows, nodata) .Call(wrap__rust_apply_warp, src_pixels, src_ncol, src_nrow, src_cols, src_rows, nodata)
 
+#' Create a GCP polynomial transformer and evaluate forward (pixel/line -> geo).
+#'
+#' @param gcp_pixel Numeric vector of GCP pixel coordinates
+#' @param gcp_line Numeric vector of GCP line coordinates
+#' @param gcp_geo_x Numeric vector of GCP georeferenced X coordinates
+#' @param gcp_geo_y Numeric vector of GCP georeferenced Y coordinates
+#' @param order Integer polynomial order (1, 2, or 3; 0 = auto)
+#' @param eval_pixel Numeric vector of pixel coordinates to transform
+#' @param eval_line Numeric vector of line coordinates to transform
+#' @return List with `x`, `y` numeric vectors and `order` integer
+#' @export
+rust_gcp_transform_fwd <- function(gcp_pixel, gcp_line, gcp_geo_x, gcp_geo_y, order, eval_pixel, eval_line) .Call(wrap__rust_gcp_transform_fwd, gcp_pixel, gcp_line, gcp_geo_x, gcp_geo_y, order, eval_pixel, eval_line)
+
+#' Create a GCP polynomial transformer and evaluate inverse (geo -> pixel/line).
+#'
+#' @param gcp_pixel Numeric vector of GCP pixel coordinates
+#' @param gcp_line Numeric vector of GCP line coordinates
+#' @param gcp_geo_x Numeric vector of GCP georeferenced X coordinates
+#' @param gcp_geo_y Numeric vector of GCP georeferenced Y coordinates
+#' @param order Integer polynomial order (1, 2, or 3; 0 = auto)
+#' @param eval_x Numeric vector of geo X coordinates to inverse-transform
+#' @param eval_y Numeric vector of geo Y coordinates to inverse-transform
+#' @return List with `pixel`, `line` numeric vectors and `order` integer
+#' @export
+rust_gcp_transform_inv <- function(gcp_pixel, gcp_line, gcp_geo_x, gcp_geo_y, order, eval_x, eval_y) .Call(wrap__rust_gcp_transform_inv, gcp_pixel, gcp_line, gcp_geo_x, gcp_geo_y, order, eval_x, eval_y)
+
+#' Return the fitted polynomial coefficients without transforming points.
+#'
+#' @param gcp_pixel Numeric vector of GCP pixel coordinates
+#' @param gcp_line Numeric vector of GCP line coordinates
+#' @param gcp_geo_x Numeric vector of GCP georeferenced X coordinates
+#' @param gcp_geo_y Numeric vector of GCP georeferenced Y coordinates
+#' @param order Integer polynomial order (1, 2, or 3; 0 = auto)
+#' @return List with forward and reverse coefficient vectors and order
+#' @export
+rust_gcp_coefficients <- function(gcp_pixel, gcp_line, gcp_geo_x, gcp_geo_y, order) .Call(wrap__rust_gcp_coefficients, gcp_pixel, gcp_line, gcp_geo_x, gcp_geo_y, order)
+
 
 # nolint end
