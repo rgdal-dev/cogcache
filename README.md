@@ -10,6 +10,26 @@
 The goal of cogcache is to attempt a conversion of the GDAL warper
 pipeline to Rust.
 
+So far this project has spawned Rust crates `rwarp` and `vaster`.
+
+rwarp is not a geospatial I/O library but a planning and kernel library
+that plugs into whatever I/O layer you already have. rwarp wants to be
+the warp kernel that sits inside the byte-range / obstore / VirtualiZarr
+/ xarray ecosystem — the piece that answers “given a byte-ref store and
+a target grid, which bytes do I need and how do I resample them?”
+without owning the bytes itself.
+
+The community this is targeting already has:
+
+- obstore — object storage I/O
+- VirtualiZarr — byte-range manifests
+- xarray — n-D array model
+- zarrs — Zarr V3 in Rust
+
+What they are missing is a first-class warp planning layer that speaks
+their language — chunk-aligned reads, byte-range requests,
+fill-ratio-aware subdivision.
+
 ## Installation
 
 You can install the development version of cogcache like so:
@@ -24,6 +44,7 @@ This is a basic example which shows you how to solve a common problem:
 
 ``` r
 library(cogcache)
+#> .onLoad cogcache PROJ_DATA has been changed from '' to '/usr/share/proj'
 ## basic example code
 ```
 

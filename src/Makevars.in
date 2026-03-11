@@ -2,7 +2,7 @@ TARGET_DIR = ./rust/target
 LIBDIR = $(TARGET_DIR)/@LIBDIR@
 STATLIB = $(LIBDIR)/libcogcache.a
 ## PKG_LIBS = -L$(LIBDIR) -lcogcache
-PKG_LIBS = -L$(LIBDIR) -lcogcache -lsqlite3 -lstdc++
+PKG_LIBS = -L$(LIBDIR) -lcogcache -lsqlite3 -lstdc++ -L/usr/local/lib -lproj
 
 all: $(SHLIB) rust_clean
 

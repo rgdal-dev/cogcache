@@ -1,4 +1,7 @@
-# cogcache 0.0.1.9012
+# cogcache 0.0.1.9013
+
+* Bump to 0.13.0 proj crate and hardcoded system proj (currently 9.7.0), which means
+we can use arbitrary projection strings (in line with rwarp). 
 
 * Rust core has now been separated out to 'hypertidy/rwarp' (or local dir). 
 
