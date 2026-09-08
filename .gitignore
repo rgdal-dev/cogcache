@@ -16,3 +16,4 @@ warp-mapping-prototype_files
 tiles
 tiles_mawson
 src/rust/.cargo
+tempfile/*
